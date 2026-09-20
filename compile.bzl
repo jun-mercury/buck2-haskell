@@ -876,6 +876,10 @@ CommonCompileModuleArgs = record(
     package_env_args = field(cmd_args),
     target_deps_args = field(cmd_args),
     toolchain_package_db = field(dict[str, HaskellToolchainPackageDbTSet]),
+    # Native libraries of dependency packages (`extra_libraries` reached
+    # through `deps`), the artifacts named by the `library-dirs` in their
+    # package confs. A Template Haskell module loads them through those confs.
+    extra_libs = field(list[Artifact]),
 )
 
 def add_worker_args(
@@ -1108,6 +1112,15 @@ def _common_compile_module_args(
     else:
         toolchain_package_db = []
 
+    # `link_args` only covers this unit's own `extra_libraries`. The ones of
+    # dependency packages reach GHC through the `library-dirs` and
+    # `extra-libraries` of their package confs, which name the directory each
+    # library sits in without making it an input. On a remote worker the conf is
+    # there and the directory is empty, so GHC falls back to dlopen("libfoo.so")
+    # against the worker's system paths and, under -Werror, fails on
+    # -Wmissed-extra-shared-lib. Locally the whole buck-out masks this.
+    extra_libs = actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info).reduce("extra_libs").extra_libs
+
     if is_worker_execute:
         package_env_args = cmd_args()
     else:
@@ -1189,6 +1202,7 @@ def _common_compile_module_args(
         package_env_args = package_env_args,
         target_deps_args = target_deps_args,
         toolchain_package_db = toolchain_package_db,
+        extra_libs = extra_libs,
     )
 
 # Arguments for GHC when running in oneshot mode.
@@ -1227,6 +1241,10 @@ def _compile_oneshot_args(
     if enable_th:
         args.add("-fprefer-byte-code")
         args.add("-fpackage-db-byte-code")
+
+        # The splices run in this process and load every package they reach,
+        # native libraries included; see `CommonCompileModuleArgs.extra_libs`.
+        args.add(cmd_args(hidden = common_args.extra_libs))
 
     if module.stub_dir != None:
         stubs = outputs_dict[module.stub_dir]
@@ -1891,6 +1909,10 @@ def compile_args_for_non_incr(
     )
 
     args.add(packages_info.exposed_package_args)
+
+    # Inputs only: the native libraries of dependency packages, which the
+    # Template Haskell splices in this unit load through the package confs.
+    args.add(cmd_args(hidden = packages_info.extra_libs_args))
 
     # handle link group
 
