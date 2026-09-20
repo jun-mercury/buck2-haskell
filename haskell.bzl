@@ -690,8 +690,12 @@ def _dynamic_link_shared_impl(
 
     link_args.add(cmd_args(toolchain_package_db_tset.project_as_args("toolchain_package_db"), prepend = "-package-db"))
 
-    # extra libraries
+    # extra libraries: this unit's own, and those of every dependency package,
+    # which GHC links in from the `extra-libraries` of their package confs. The
+    # confs name a directory; without the artifacts as inputs a remote worker
+    # has the directory empty and ld reports `cannot find -luuid`.
     link_cmd_hidden.extend(extra_libs)
+    link_cmd_hidden.extend(libs.reduce("extra_libs").extra_libs)
 
     # link group
     for lg in arg.link_group_libs:
