@@ -51,6 +51,12 @@ HaskellToolchainInfo = provider(
         "packages": provider_field(HaskellToolchainPackagesInfo | None, default = None),
         "use_persistent_workers": provider_field(bool, default = False),
         "use_worker": provider_field(bool, default = False),
+        # The command an action runs where buck2 does not run its worker: a
+        # remote executor, or a platform without persistent workers. Its command
+        # line is the worker's request; it sends it to a server the execution
+        # environment runs and returns the response's exit code. Without one,
+        # a worker action has no executable outside the worker.
+        "worker_client": provider_field(RunInfo | None, default = None),
         "ghc_dir": provider_field(Artifact | None, default = None),
         # RTS options passed to GHC, changing the behavior of the compiler process, not the resulting binaries like
         # `-with-rtsopts` would.
