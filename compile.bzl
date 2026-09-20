@@ -578,7 +578,7 @@ def _dynamic_target_metadata_impl(
             md_args,
             category = "haskell_metadata",
             identifier = arg.suffix if arg.suffix else None,
-            exe = WorkerRunInfo(worker = arg.worker),
+            exe = WorkerRunInfo(worker = arg.worker, exe = worker_fallback(haskell_toolchain)),
             allow_cache_upload = arg.allow_cache_upload,
         )
     else:
@@ -887,6 +887,17 @@ def add_worker_args(
         command: cmd_args,
         pkgname: str) -> None:
     command.add("--worker-target-id", "singleton")
+
+# `WorkerRunInfo.exe` is what buck2 runs when it does not run the worker: on a
+# remote executor, or on a platform without `use_persistent_workers`. The
+# toolchain's `worker_client` is that command, a client whose command line is
+# the request and whose exit code is the response's; the request's arguments
+# follow it unchanged. Without a client the list stays empty, and such an
+# action cannot run outside the worker, as before.
+def worker_fallback(haskell_toolchain: HaskellToolchainInfo) -> list | RunInfo:
+    if haskell_toolchain.worker_client:
+        return haskell_toolchain.worker_client
+    return []
 
 def make_package_env(
         *,
@@ -1522,7 +1533,7 @@ def _compile_module(
 
     worker_args = {}
     if worker != None and is_worker_execute:
-        worker_args["exe"] = WorkerRunInfo(worker = worker)
+        worker_args["exe"] = WorkerRunInfo(worker = worker, exe = worker_fallback(haskell_toolchain))
 
     actions.run(
         cmd_args(
