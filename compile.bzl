@@ -342,11 +342,15 @@ def _modules_by_name(
     return modules
 
 # Collect the metadata outputs of the transitive closure of the current unit's dependencies.
-def transitive_metadata(actions: AnalysisActions, pkgname: str, packages_info: PackagesInfo) -> Artifact:
-    dep_units_file = actions.declare_output("dep-units-{}.json".format(pkgname))
+def transitive_metadata(actions: AnalysisActions, dep_units_file: OutputArtifact, packages_info: PackagesInfo) -> Artifact:
     dep_units = reversed(packages_info.transitive_deps.project_as_json("dep_units", ordering = "topological").traverse())
-    actions.write_json(dep_units_file, dep_units, pretty = True)
-    return dep_units_file
+    return actions.write_json(dep_units_file, dep_units, pretty = True)
+
+# `argfile` for an output declared elsewhere: `argfile` takes a name or an
+# `Artifact`, not an `OutputArtifact`.
+def _write_argfile(actions: AnalysisActions, output: OutputArtifact, args: cmd_args) -> cmd_args:
+    args_file, _ = actions.write(output, args, allow_args = True, with_inputs = True)
+    return cmd_args(args_file, hidden = args)
 
 # Static variant of the dependency unit list for the persistent worker's metadata calculation.
 def direct_metadata_static(actions: AnalysisActions, pkgname: str, libs: list[HaskellLibraryInfo]) -> cmd_args:
@@ -500,6 +504,7 @@ MetadataParams = record(
 def _dynamic_target_metadata_impl(
         actions: AnalysisActions,
         output: OutputArtifact,
+        worker_files: dict[str, OutputArtifact],
         arg: MetadataParams,
         pkg_deps: None | ResolvedDynamicValue) -> list[Provider]:
     munit = arg.unit
@@ -533,13 +538,6 @@ def _dynamic_target_metadata_impl(
 
     (ghc_args, buck2_args) = metadata_unit_args(actions, munit, packages_info, output)
 
-    buck_args_file = argfile(
-        actions = actions,
-        name = "haskell_metadata_buck2_{}.args".format(unit.name),
-        args = buck2_args,
-        allow_args = True,
-    )
-
     if is_worker_execute:
         makefile = actions.declare_output(unit.name + ".depends.make")
 
@@ -548,12 +546,23 @@ def _dynamic_target_metadata_impl(
         ghc_args.add("-dep-makefile", cmd_args(makefile, ignore_artifacts = True))
         ghc_args.add(cmd_args(arg.sources))
 
-    ghc_args_file = argfile(
-        actions = actions,
-        name = "haskell_metadata_ghc_{}.args".format(unit.name),
-        args = ghc_args,
-        allow_args = True,
-    )
+        # The compile requests read these back through the plan; the files
+        # are declared by `target_metadata`, see there.
+        buck_args_file = _write_argfile(actions, worker_files["buck_args"], buck2_args)
+        ghc_args_file = _write_argfile(actions, worker_files["ghc_args"], ghc_args)
+    else:
+        buck_args_file = argfile(
+            actions = actions,
+            name = "haskell_metadata_buck2_{}.args".format(unit.name),
+            args = buck2_args,
+            allow_args = True,
+        )
+        ghc_args_file = argfile(
+            actions = actions,
+            name = "haskell_metadata_ghc_{}.args".format(unit.name),
+            args = ghc_args,
+            allow_args = True,
+        )
 
     if is_worker_execute:
         md_args = cmd_args()
@@ -571,7 +580,7 @@ def _dynamic_target_metadata_impl(
         if munit.is_binary:
             md_args.add("--unit-is-binary")
         md_args.add("--unit-buck-args-path", buck_args_file)
-        md_args.add("--dep-units-path", transitive_metadata(actions, unit.name, packages_info))
+        md_args.add("--dep-units-path", transitive_metadata(actions, worker_files["dep_units"], packages_info))
         md_args.add(cmd_args(ghc_args_file, prepend = "--ghc-args", hidden = [output, makefile.as_output()]))
 
         actions.run(
@@ -623,6 +632,7 @@ _dynamic_target_metadata = dynamic_actions(
     impl = _dynamic_target_metadata_impl,
     attrs = {
         "output": dynattrs.output(),
+        "worker_files": dynattrs.dict(str, dynattrs.output()),
         "arg": dynattrs.value(MetadataParams),
         "pkg_deps": dynattrs.option(dynattrs.dynamic_value()),
     },
@@ -672,9 +682,28 @@ def target_metadata(
     #
     # (module X.Y.Z must be defined in a file at X/Y/Z.hs)
 
+    # In worker mode the compile requests restore the unit from the plan, and
+    # the plan names these three files of the metadata action by path. A
+    # worker that buck2 runs shares buck2's working directory and finds them
+    # there; a worker on a remote executor sees the compile action's execution
+    # root, which holds the action's inputs and nothing else. So the files
+    # become inputs of every action that has the plan as an input, the compile
+    # requests first of all, by being associated with the plan. Declared here
+    # rather than inside the dynamic action because a dynamic action's own
+    # outputs cannot be named before it runs.
+    worker_files = {}
+    if is_worker_execute:
+        prefix = ctx.label.name + link_suffix + prof_suffix
+        worker_files = {
+            "buck_args": ctx.actions.declare_output(prefix + ".buck2.args"),
+            "dep_units": ctx.actions.declare_output(prefix + ".dep-units.json"),
+            "ghc_args": ctx.actions.declare_output(prefix + ".ghc.args"),
+        }
+
     ctx.actions.dynamic_output_new(_dynamic_target_metadata(
         pkg_deps = haskell_toolchain.packages.dynamic if haskell_toolchain.packages else None,
         output = md_file.as_output(),
+        worker_files = {name: f.as_output() for name, f in worker_files.items()},
         arg = MetadataParams(
             unit = MetadataUnitParams(
                 unit = UnitParams(
@@ -709,7 +738,7 @@ def target_metadata(
         ),
     ))
 
-    return md_file.with_associated_artifacts([src for src in sources if not src.is_source])
+    return md_file.with_associated_artifacts([src for src in sources if not src.is_source] + worker_files.values())
 
 # List of a unit's modules for the persistent worker's metadata calculation.
 def target_skeleton(ctx: AnalysisContext, sources: list[Artifact]) -> Artifact:
@@ -880,6 +909,11 @@ CommonCompileModuleArgs = record(
     # through `deps`), the artifacts named by the `library-dirs` in their
     # package confs. A Template Haskell module loads them through those confs.
     extra_libs = field(list[Artifact]),
+    # Worker mode: the build plans of the transitive dependency units, each
+    # with its metadata files (see `target_metadata`). A compile request's
+    # server restores every unit it does not hold from these, following the
+    # `dep_units` list of this unit's plan.
+    dep_build_plans = field(cmd_args),
 )
 
 def add_worker_args(
@@ -1134,7 +1168,10 @@ def _common_compile_module_args(
 
     if is_worker_execute:
         package_env_args = cmd_args()
+        dep_build_plans = cmd_args(actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info).project_as_args("build_plans"))
     else:
+        dep_build_plans = cmd_args()
+
         # Add -package-db and -package/-expose-package flags for each Haskell
         # library dependency.
 
@@ -1214,6 +1251,7 @@ def _common_compile_module_args(
         target_deps_args = target_deps_args,
         toolchain_package_db = toolchain_package_db,
         extra_libs = extra_libs,
+        dep_build_plans = dep_build_plans,
     )
 
 # Arguments for GHC when running in oneshot mode.
@@ -1338,6 +1376,7 @@ def _compile_make_args(
         "-c",
         hidden = [
             common_args.common_args_file,
+            common_args.dep_build_plans,
             _get_module_outputs(module, outputs),
             module.source,
         ],
