@@ -698,7 +698,10 @@ def _dynamic_link_shared_impl(
 
     link_args.add(cmd_args(toolchain_package_db_tset.project_as_args("toolchain_package_db"), prepend = "-package-db"))
 
-    # extra libraries
+    # extra libraries: this unit's own, and those of every dependency package,
+    # which GHC links in from the `extra-libraries` of their package confs. The
+    # confs name a directory; without the artifacts as inputs a remote worker
+    # has the directory empty and ld reports `cannot find -luuid`.
     link_cmd_hidden.extend(extra_libs)
 
     # link group
@@ -841,6 +844,14 @@ def _build_haskell_lib(
     extra_libs = extra_lib_info.extra_libs
     extra_lib_dyns = extra_lib_info.extra_lib_dyns
 
+    # The dependency packages' own, which only reach the link as inputs; see
+    # _dynamic_link_shared_impl.
+    deps_extra_libs = get_extra_lib_info(link_style, traverse_extra_libraries(make_extra_libraries_tset(
+        ctx.actions,
+        extra_libraries = [],
+        haskell_libraries = attr_deps_haskell_link_infos(ctx),
+    ))).extra_libs
+
     link_args = unpack_link_args(get_link_args_for_strategy(
         ctx.actions,
         ctx.label,
@@ -885,7 +896,7 @@ def _build_haskell_lib(
 
         ctx.actions.dynamic_output_new(_dynamic_link_shared(
             pkg_deps = haskell_toolchain.packages.dynamic,
-            extra_libs = extra_libs,
+            extra_libs = dedupe_by_value(extra_libs + deps_extra_libs),
             extra_lib_dyns = extra_lib_dyns,
             lib = lib.as_output(),
             arg = _DynamicLinkSharedOptions(
