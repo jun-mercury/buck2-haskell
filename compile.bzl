@@ -1499,12 +1499,18 @@ def _compile_module(
             md_file = md_file,
         ))
 
-        # The splices run in the server and load every native library the
-        # unit's `-l` flags name, this unit's own (`link_args`) and its
-        # dependencies' (`extra_libs`), the way `_compile_oneshot_args` makes
-        # them inputs of a one-shot compile.
-        if enable_th:
-            wrapper_args_for_file.add(cmd_args(hidden = [common_args.extra_libs, link_args]))
+        # A Template Haskell splice dlopens every native library the unit's
+        # `-l` flags name, this unit's own (`link_args`) and its dependencies'
+        # (`extra_libs`), the way `_compile_oneshot_args` makes them inputs of
+        # a one-shot Template Haskell compile. The server loads them lazily
+        # inside the persistent `--make` session (`ensureLibraries` in
+        # `Internal/State/Linkables.hs`), so the load lands in whichever
+        # module's request first resolves the linkable, not always the module
+        # that carries the splice. Every module compile of the unit therefore
+        # lists them, or a compile on a remote executor fails with
+        # `libfoo.so: cannot open shared object file` in an execution root that
+        # never received the library.
+        wrapper_args_for_file.add(cmd_args(hidden = [common_args.extra_libs, link_args]))
 
         # The make worker does not support stub dirs at the moment, so we create it directly.
         # Since the entire module graph's flags are supposed to be fully initialized in the metadata step, we can't pass
