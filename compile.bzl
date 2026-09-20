@@ -909,11 +909,12 @@ CommonCompileModuleArgs = record(
     # through `deps`), the artifacts named by the `library-dirs` in their
     # package confs. A Template Haskell module loads them through those confs.
     extra_libs = field(list[Artifact]),
-    # Worker mode: the build plans of the transitive dependency units, each
-    # with its metadata files (see `target_metadata`). A compile request's
-    # server restores every unit it does not hold from these, following the
-    # `dep_units` list of this unit's plan.
-    dep_build_plans = field(cmd_args),
+    # Worker mode: what a compile request's server reads to restore a unit it
+    # does not hold, and nothing in the module's own arguments names: the
+    # transitive dependency units' build plans, each with its metadata files
+    # (see `target_metadata`), and the toolchain package dbs the unit's
+    # `-package-db` flags list. Empty in one-shot mode.
+    unit_inputs = field(cmd_args),
 )
 
 def add_worker_args(
@@ -1166,28 +1167,41 @@ def _common_compile_module_args(
     # -Wmissed-extra-shared-lib. Locally the whole buck-out masks this.
     extra_libs = actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info).reduce("extra_libs").extra_libs
 
+    libs = actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info)
+
+    direct_toolchain_libs = [
+        dep[HaskellToolchainLibrary].name
+        for dep in arg.deps
+        if HaskellToolchainLibrary in dep
+    ]
+    toolchain_libs = direct_toolchain_libs + libs.reduce("packages") + arg.plugin_toolchain_deps
+
+    toolchain_package_db_tset = actions.tset(
+        HaskellToolchainPackageDbTSet,
+        children = [toolchain_package_db[name] for name in toolchain_libs if name in toolchain_package_db],
+    )
+
     if is_worker_execute:
         package_env_args = cmd_args()
-        dep_build_plans = cmd_args(actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info).project_as_args("build_plans"))
+
+        # The server restores the unit from the plan the request names, with
+        # the arguments the metadata step wrote for it, and initialises GHC's
+        # unit state from them: it reads the dependency units' plans and args
+        # files, then opens every package db the unit's `-package-db` flags
+        # name. The module's own arguments name none of those, so a compile
+        # action on a remote executor has to list them as inputs or its
+        # execution root lacks them; a worker buck2 runs shares buck2's
+        # working directory and never notices. A plan carries its args files
+        # as associated artifacts (see `target_metadata`).
+        unit_inputs = cmd_args(hidden = [
+            libs.project_as_args("build_plans"),
+            toolchain_package_db_tset.project_as_args("toolchain_package_db"),
+        ])
     else:
-        dep_build_plans = cmd_args()
+        unit_inputs = cmd_args()
 
         # Add -package-db and -package/-expose-package flags for each Haskell
         # library dependency.
-
-        libs = actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info)
-
-        direct_toolchain_libs = [
-            dep[HaskellToolchainLibrary].name
-            for dep in arg.deps
-            if HaskellToolchainLibrary in dep
-        ]
-        toolchain_libs = direct_toolchain_libs + libs.reduce("packages") + arg.plugin_toolchain_deps
-
-        toolchain_package_db_tset = actions.tset(
-            HaskellToolchainPackageDbTSet,
-            children = [toolchain_package_db[name] for name in toolchain_libs if name in toolchain_package_db],
-        )
 
         if incremental:
             packagedb_args = cmd_args(libs.project_as_args("empty_package_db"))
@@ -1251,7 +1265,7 @@ def _common_compile_module_args(
         target_deps_args = target_deps_args,
         toolchain_package_db = toolchain_package_db,
         extra_libs = extra_libs,
-        dep_build_plans = dep_build_plans,
+        unit_inputs = unit_inputs,
     )
 
 # Arguments for GHC when running in oneshot mode.
@@ -1376,7 +1390,7 @@ def _compile_make_args(
         "-c",
         hidden = [
             common_args.common_args_file,
-            common_args.dep_build_plans,
+            common_args.unit_inputs,
             _get_module_outputs(module, outputs),
             module.source,
         ],
@@ -1484,6 +1498,13 @@ def _compile_module(
             outputs = outputs,
             md_file = md_file,
         ))
+
+        # The splices run in the server and load every native library the
+        # unit's `-l` flags name, this unit's own (`link_args`) and its
+        # dependencies' (`extra_libs`), the way `_compile_oneshot_args` makes
+        # them inputs of a one-shot compile.
+        if enable_th:
+            wrapper_args_for_file.add(cmd_args(hidden = [common_args.extra_libs, link_args]))
 
         # The make worker does not support stub dirs at the moment, so we create it directly.
         # Since the entire module graph's flags are supposed to be fully initialized in the metadata step, we can't pass
