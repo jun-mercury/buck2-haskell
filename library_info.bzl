@@ -109,6 +109,11 @@ def _json_as_dep_units(lib: HaskellLibraryInfo) -> struct:
         build_plan = lib.md_file,
     )
 
+# The plan carries its metadata files as associated artifacts (see
+# `target_metadata` in compile.bzl), so this projection brings them too.
+def _project_as_build_plans(lib: HaskellLibraryInfo) -> cmd_args:
+    return cmd_args(lib.md_file) if lib.md_file != None else cmd_args()
+
 HaskellLibraryInfoTSet = transitive_set(
     args_projections = {
         "package_db": _project_as_package_db,
@@ -116,6 +121,7 @@ HaskellLibraryInfoTSet = transitive_set(
         "deps_package_db": _project_as_deps_package_db,
         "libs": _project_as_libs,
         "interfaces": _project_as_interfaces,
+        "build_plans": _project_as_build_plans,
     },
     reductions = {
         "toolchain_packages": _get_toolchain_packages,
