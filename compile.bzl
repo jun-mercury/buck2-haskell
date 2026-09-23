@@ -1777,6 +1777,184 @@ def _get_module_from_map(mapped_modules: dict[str, _Module], module_name: str) -
         fail("Can't compile module `{}` as it's not in the module map. Available module names are: {}".format(module_name, available_names))
     return module
 
+fixed_boot_modules = {
+    "Amazonka.Env-boot": ["Amazonka.Env.Hooks-boot", "Amazonka.Logger"],
+    "Amazonka.Env.Hooks-boot": [],
+}
+
+fixed_boot_packages = {
+    "Amazonka.WAFV2.Types.ManagedRuleGroupStatement-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.Kendra.Types.FacetResult-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.Kendra.Types.DocumentAttributeValueCountPair-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.AmplifyUiBuilder.Types.ComponentConditionProperty-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.AmplifyUiBuilder.Types.ThemeValues-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.TimeStreamQuery.Types.Datum-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.TimeStreamQuery.Types.ColumnInfo-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.TimeStreamQuery.Types.Row-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.WAFV2.Types.OrStatement-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.WAFV2.Types.AndStatement-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.WAFV2.Types.Statement-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.FSx.Types.Snapshot-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.FSx.Types.AdministrativeAction-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.WAFV2.Types.RateBasedStatement-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.FSx.Types.FileSystem-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.FSx.Types.Volume-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.TimeStreamQuery.Types.TimeSeriesDataPoint-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.AmplifyUiBuilder.Types.ThemeValue-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+    "Amazonka.WAFV2.Types.NotStatement-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+        ],
+    },
+    "Amazonka.AmplifyUiBuilder.Types.ComponentProperty-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+        ],
+    },
+    "Amazonka.Env-boot": {
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Prelude",
+            "Amazonka.Types",
+        ],
+        "http-client": [
+            "Network.HTTP.Client",
+        ],
+    },
+    "Amazonka.Env.Hooks-boot": {
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Prelude",
+            "Amazonka.Types",
+        ],
+        "http-client": [
+            "Network.HTTP.Client",
+        ],
+    },
+    "Amazonka.TimeStreamQuery.Types.Type-boot": {
+        "base": ["Prelude"],
+        "root-amazonka-lib-amazonka-core-amazonka-core": [
+            "Amazonka.Data",
+            "Amazonka.Prelude",
+        ],
+    },
+}
+
+def get_fixed_packages(module_name):
+    ret = fixed_boot_packages.get(module_name, {})
+
+    # if ret:
+    #     print("fixed packages for", module_name, ret)
+    return ret
+
 # Compile incrementally and fill module_tsets accordingly.
 def _compile_incr(
         actions: AnalysisActions,
@@ -1796,6 +1974,19 @@ def _compile_incr(
         direct = direct_deps_by_name,
         toolchain = arg.toolchain_deps_by_name,
     )
+
+    boot_modules = set()
+    for v in graph_info.graph.values():
+        boot_modules.update(filter(lambda x: x.endswith("-boot"), v))
+
+    if "Amazonka.Env" in graph_info.graph:
+        deps = [dep for dep in graph_info.graph["Amazonka.Env"] if dep != "Amazonka.Env.Hooks-boot"]
+        graph_info.graph["Amazonka.Env"] = deps + ["Amazonka.Env.Hooks"]
+
+    for boot_module in boot_modules:
+        if not boot_module in graph_info.graph:
+            #print("fixing", boot_module)
+            graph_info.graph[boot_module] = fixed_boot_modules.get(boot_module, [])
 
     for module_name in post_order_traversal(graph_info.graph):
         module = _get_module_from_map(mapped_modules, module_name)
@@ -1821,7 +2012,7 @@ def _compile_incr(
             worker = arg.worker,
             allow_worker = arg.allow_worker,
             allow_cache_upload = arg.allow_cache_upload,
-            module_package_deps = ModulePackageDeps(packages = package_deps.get(module_name, {})),
+            module_package_deps = ModulePackageDeps(packages = package_deps.get(module_name, get_fixed_packages(module_name))),
             module_plugin_flags = arg.srcs_plugin_flags.get(module.source),
             module_plugin_tool_paths = arg.srcs_plugin_tool_paths.get(module.source),
             oneshot_linkables = cmd_args(arg.oneshot_linkables, "-fplugin-opt=Buck2Haskell.OneshotLinkables:no-th-closure") if arg.oneshot_linkables != None and module_name in arg.oneshot_th_closure_exclude else arg.oneshot_linkables,
@@ -2118,7 +2309,7 @@ def _dynamic_do_compile_impl(
         else:
             deps = module_graph.get(module_name, [])
             children = []
-            mod_pkg_deps = package_deps.get(module_name, {})
+            mod_pkg_deps = package_deps.get(module_name, get_fixed_packages(module_name))
             for pkg in mod_pkg_deps.keys():
                 pkg_key = "_" + pkg
                 if graph_set.get(pkg_key):
