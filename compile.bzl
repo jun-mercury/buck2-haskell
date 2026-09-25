@@ -474,7 +474,8 @@ def metadata_unit_args(
 
     ghc_args.add(cmd_args(packages_info.packagedb_args, prepend = "-package-db"))
     ghc_args.add("-fprefer-byte-code")
-    ghc_args.add("-fpackage-db-byte-code")
+    if arg.unit.haskell_toolchain.package_db_byte_code:
+        ghc_args.add("-fpackage-db-byte-code")
     ghc_args.add(packages_info.extra_libs_args)
 
     buck2_args = unit_buck2_args(actions, arg.unit)
@@ -1141,8 +1142,13 @@ def _common_compile_module_args(
             children = [toolchain_package_db[name] for name in toolchain_libs if name in toolchain_package_db],
         )
 
-        if incremental:
+        if incremental and arg.haskell_toolchain.package_db_byte_code:
             packagedb_args = cmd_args(libs.project_as_args("empty_package_db"))
+        elif incremental:
+            # Without package-db bytecode a splice loads the dependency's
+            # library, so the compile sees the registration that names it and
+            # has the library among its inputs.
+            packagedb_args = cmd_args(libs.project_as_args("package_db"), hidden = libs.project_as_args("libs"))
         else:
             all_link_group_ids = [l.id for lg in arg.link_group_libs for l in lg.libraries]
             packagedb_args = cmd_args()
@@ -1209,6 +1215,7 @@ def _common_compile_module_args(
 def _compile_oneshot_args(
         actions: AnalysisActions,
         common_args: CommonCompileModuleArgs,
+        haskell_toolchain: HaskellToolchainInfo,
         is_worker_execute: bool,
         link_style: LinkStyle,
         link_args: ArgLike,
@@ -1240,7 +1247,8 @@ def _compile_oneshot_args(
 
     if enable_th:
         args.add("-fprefer-byte-code")
-        args.add("-fpackage-db-byte-code")
+        if haskell_toolchain.package_db_byte_code:
+            args.add("-fpackage-db-byte-code")
 
         # The splices run in this process and load every package they reach,
         # native libraries included; see `CommonCompileModuleArgs.extra_libs`.
@@ -1457,6 +1465,7 @@ def _compile_module(
         compile_args_for_file.add(_compile_oneshot_args(
             actions,
             common_args = common_args,
+            haskell_toolchain = haskell_toolchain,
             is_worker_execute = is_worker_execute,
             link_style = link_style,
             link_args = link_args,
@@ -1657,7 +1666,8 @@ def compile_args_for_non_incr(
 
     args.add("-fbyte-code-and-object-code")
     args.add("-fprefer-byte-code")
-    args.add("-fpackage-db-byte-code")
+    if haskell_toolchain.package_db_byte_code:
+        args.add("-fpackage-db-byte-code")
     args.add("-j")
 
     args.add("-no-link", "-i")

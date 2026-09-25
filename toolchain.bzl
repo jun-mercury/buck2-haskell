@@ -30,6 +30,12 @@ HaskellToolchainInfo = provider(
         "linker_flags": provider_field(typing.Any, default = None),
         "haddock": provider_field(RunInfo),
         "compiler_major_version": provider_field(str | None, default = None),
+        # Whether the compiler loads dependency bytecode from package databases
+        # (`-fpackage-db-byte-code`, the Mercury GHC fork; upstream MR !13068,
+        # still open). Off, a Template Haskell splice links a dependency's
+        # native library instead, so the compile registers dependencies through
+        # their final package databases and carries the libraries as inputs.
+        "package_db_byte_code": provider_field(bool, default = True),
         "package_name_prefix": provider_field(typing.Any, default = None),
         "packager": provider_field(RunInfo),
         "support_expose_package": provider_field(bool, default = False),
