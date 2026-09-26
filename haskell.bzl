@@ -166,7 +166,6 @@ def _toolchain_target_metadata_impl(
         category = "haskell_toolchain_library_metadata",
         identifier = libname,
         allow_cache_upload = True,
-        local_only = True,  # XXX only use local execution for now
     )
 
     return []
