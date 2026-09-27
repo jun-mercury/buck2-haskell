@@ -21,8 +21,9 @@ load(":haskell_haddock.bzl", "haskell_haddock_impl")
 load(":haskell_ide.bzl", "haskell_ide_impl")
 load(":library_info.bzl", "HaskellLibraryProvider", "HaskellSourceInfo")
 load(":link_info.bzl", "GhcLinkableInfo", "HaskellLinkInfo")
+load(":oneshot_linkables.bzl", "OneshotLinkablesInfo")
 load(":toolchain.bzl", "haskell_toolchain")
-load(":worker_config.bzl", "worker_per_configuration")
+load(":worker_config.bzl", "oneshot_linkables_enabled", "worker_per_configuration")
 
 def _srcs_arg():
     return {
@@ -88,6 +89,14 @@ def _allow_worker_attr():
         Has no effect if the _worker attribute is not set or if ghc_worker.enable is set to false.
     """)
 
+def _oneshot_linkables_attr():
+    if oneshot_linkables_enabled():
+        return attrs.exec_dep(
+            providers = [OneshotLinkablesInfo],
+            default = "@buck2-haskell//tools:oneshot_linkables",
+        )
+    return attrs.option(attrs.exec_dep(providers = [OneshotLinkablesInfo]), default = None)
+
 def _scripts_arg():
     return {
         "_generate_target_metadata": attrs.dep(
@@ -102,6 +111,7 @@ def _scripts_arg():
             providers = [RunInfo],
             default = "@buck2-haskell//tools:ghc_pkg_registerer",
         ),
+        "_oneshot_linkables": _oneshot_linkables_attr(),
         # Configuration scope is controlled by ghc-worker.per_configuration.
         # FIXME(DUX-5633): Retire workers when their configuration becomes
         # inactive or the build is under memory pressure, perhaps in buck-proxy.
