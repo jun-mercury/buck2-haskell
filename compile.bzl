@@ -46,6 +46,7 @@ load(
     "make_extra_libraries_tset",
     "traverse_extra_libraries",
 )
+load(":oneshot_linkables.bzl", "OneshotLinkablesInfo")
 load(
     ":toolchain.bzl",
     "DynamicHaskellToolchainPackageDbInfo",
@@ -218,6 +219,8 @@ _DynamicDoCompileOptions = record(
     srcs_plugin_flags = field(dict[typing.Any, cmd_args], default = {}),
     # Per-source plugin tool paths (from `srcs_plugins` attr). Source -> list[RunInfo].
     srcs_plugin_tool_paths = field(dict[typing.Any, typing.Any], default = {}),
+    # GHC flags that load the oneshot linkables plugin, if `haskell.oneshot_linkables` is set.
+    oneshot_linkables = field(cmd_args | None, default = None),
     # Toolchain library names required by plugins (from `plugins` attr) that
     # need to be added to the GHC command line. These are not necessarily the
     # same as the toolchain libraries required by the unit itself, since it's
@@ -1211,7 +1214,8 @@ def _compile_oneshot_args(
         outputs: ArtifactOutputMap,
         artifact_suffix: str,
         package_deps: list[str],
-        packagedb_tag: ArtifactTag) -> cmd_args:
+        packagedb_tag: ArtifactTag,
+        oneshot_linkables: cmd_args | None) -> cmd_args:
     args = cmd_args()
     args.add(packagedb_tag.tag_artifacts(common_args.package_env_args))
 
@@ -1234,6 +1238,8 @@ def _compile_oneshot_args(
     if enable_th:
         args.add("-fprefer-byte-code")
         args.add("-fpackage-db-byte-code")
+        if oneshot_linkables != None:
+            args.add(oneshot_linkables)
 
     if module.stub_dir != None:
         stubs = outputs_dict[module.stub_dir]
@@ -1356,7 +1362,8 @@ def _compile_module(
         allow_cache_upload: bool,
         module_package_deps: ModulePackageDeps | None = None,
         module_plugin_flags: cmd_args | None = None,
-        module_plugin_tool_paths: typing.Any = None) -> CompiledModuleTSet:
+        module_plugin_tool_paths: typing.Any = None,
+        oneshot_linkables: cmd_args | None = None) -> CompiledModuleTSet:
     is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker)
 
     abi_tag = actions.artifact_tag()
@@ -1463,6 +1470,7 @@ def _compile_module(
             artifact_suffix = artifact_suffix,
             package_deps = categorized_package_deps.package_deps,
             packagedb_tag = packagedb_tag,
+            oneshot_linkables = oneshot_linkables,
         ))
 
         wrapper_args_for_file.add(_wrapper_oneshot_args(
@@ -1611,6 +1619,7 @@ def _compile_incr(
             module_package_deps = ModulePackageDeps(packages = package_deps.get(module_name, {})),
             module_plugin_flags = arg.srcs_plugin_flags.get(module.source),
             module_plugin_tool_paths = arg.srcs_plugin_tool_paths.get(module.source),
+            oneshot_linkables = arg.oneshot_linkables,
         )
 
 def compile_args_for_non_incr(
@@ -1973,6 +1982,10 @@ _dynamic_do_compile = dynamic_actions(
 )
 
 # Compile all the context's sources.
+def _oneshot_linkables_args(ctx: AnalysisContext) -> cmd_args | None:
+    plugin = getattr(ctx.attrs, "_oneshot_linkables", None)
+    return plugin[OneshotLinkablesInfo].ghc_args if plugin else None
+
 def compile(
         ctx: AnalysisContext,
         link_style: LinkStyle,
@@ -2107,6 +2120,7 @@ def compile(
             srcs_plugin_flags = srcs_plugin_flags,
             srcs_plugin_tool_paths = srcs_plugin_tool_paths,
             plugin_toolchain_deps = plugin_toolchain_deps,
+            oneshot_linkables = _oneshot_linkables_args(ctx),
         ),
     ))
 
