@@ -1,3 +1,4 @@
+load("@buck2-haskell//:oneshot_linkables.bzl", "haskell_oneshot_linkables")
 load("@prelude//utils:source_listing.bzl", "source_listing")
 
 oncall("build_infra")
@@ -39,5 +40,17 @@ prelude.python_bootstrap_binary(
 prelude.python_bootstrap_binary(
     name = "compute_exposed_packages",
     main = "compute_exposed_packages.py",
+    visibility = ["PUBLIC"],
+)
+
+prelude.python_bootstrap_binary(
+    name = "build_oneshot_linkables",
+    main = "build_oneshot_linkables.py",
+    visibility = ["PUBLIC"],
+)
+
+haskell_oneshot_linkables(
+    name = "oneshot_linkables",
+    src = "oneshot_linkables/Buck2Haskell/OneshotLinkables.hs",
     visibility = ["PUBLIC"],
 )
