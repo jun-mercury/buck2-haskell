@@ -1,0 +1,195 @@
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
+
+-- | A driver plugin that gives a oneshot-mode GHC back its linker dependency
+-- resolution for Template Haskell.
+--
+-- The Mercury GHC 9.10 patch "Split getLinkDeps and abstract over the
+-- interface" (MercuryTechnologies/ghc 155b0ba4) moves the resolver behind
+-- 'hsc_linkables' and keeps only its make-mode half, because the persistent
+-- worker compiles in make mode and installs its own resolver. A oneshot
+-- compile (@ghc -c@, which is what buck2-haskell runs when the worker is off)
+-- then treats every module a splice needs as external and links it as a
+-- library:
+--
+-- * a module of the unit being compiled has no library, so GHC fails with
+--   @unknown package: <this unit>@;
+-- * a dependency package that buck2-haskell registers without a library
+--   (its "empty" package db, which relies on @-fpackage-db-byte-code@) loads
+--   nothing, so the splice fails on an unresolved closure symbol.
+--
+-- This plugin installs the oneshot half of the resolver as it stood before that
+-- patch. In make mode it defers to GHC's own resolver.
+module Buck2Haskell.OneshotLinkables (plugin) where
+
+import Control.Applicative ((<|>))
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
+import qualified Data.Set as Set
+import GHC.Data.Maybe (MaybeErr (..))
+import GHC.Driver.Env (hscInterp)
+import GHC.Driver.Env.Types (HscEnv (..))
+import GHC.Driver.Plugins (Plugin (..), defaultPlugin, purePlugin)
+import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
+import GHC.Iface.Errors.Types (MissingInterfaceError)
+import GHC.Linker.Deps
+  ( LinkDep (..)
+  , LinkDepsOpts (..)
+  , LinkModule (..)
+  , resolveLinkDeps
+  , selectLinkDeps
+  )
+import GHC.Linker.Loader (initLinkDepsOpts)
+import GHC.Linker.Types (Linkable, Linkables (..), LoaderState (..))
+import GHC.Types.SrcLoc (SrcSpan)
+import GHC.Types.Unique.DFM
+  ( UniqDFM
+  , addListToUDFM
+  , addToUDFM
+  , alterUDFM
+  , eltsUDFM
+  , elemUDFM
+  , emptyUDFM
+  , lookupUDFM
+  , minusUDFM
+  , unitUDFM
+  )
+import GHC.Types.Unique.DSet (UniqDSet, getUniqDSet, mkUniqDSet)
+import GHC.Unit.Env (ue_homeUnit)
+import GHC.Unit.Home (homeUnitAsUnit)
+import GHC.Unit.Home.ModInfo (hm_iface)
+import GHC.Unit.Module (Module, mkModule, moduleName, moduleUnit, moduleUnitId)
+import GHC.Unit.Module.Deps (Dependencies (..), Usage (..))
+import GHC.Unit.Module.Env (lookupModuleEnv)
+import GHC.Unit.Module.ModIface (ModIface, mi_boot, mi_deps, mi_module, mi_usages)
+import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..), UnitId)
+import GHC.Utils.Misc (partitionWith)
+import GHC.Utils.Outputable (SDoc, ppr, renderWithContext, text, (<+>))
+import GHC.Utils.Panic (GhcException (ProgramError), throwGhcExceptionIO)
+
+plugin :: Plugin
+plugin =
+  defaultPlugin
+    { driverPlugin = \_ hsc_env -> pure hsc_env {hsc_linkables = linkables}
+    , pluginRecompile = purePlugin
+    }
+
+linkables :: HscEnv -> LoaderState -> IO Linkables
+linkables hsc_env pls =
+  pure
+    Linkables
+      { linkablesResolve = resolve
+      , linkablesSelect = selectLinkDeps opts (hscInterp hsc_env)
+      }
+  where
+    opts = initLinkDepsOpts hsc_env
+
+    resolve :: SrcSpan -> [Module] -> IO ([Linkable], [LinkModule], UniqDSet UnitId, [UnitId])
+    resolve span mods
+      | ldOneShotMode opts = classifyDeps pls <$> oneshotDeps opts mods
+      | otherwise = resolveLinkDeps opts pls span mods
+
+data OneshotError
+  = NoInterface !MissingInterfaceError
+  | LinkBootModule !Module
+
+oneshotDeps :: LinkDepsOpts -> [Module] -> IO [LinkDep]
+oneshotDeps opts mods =
+  runExceptT (depsLoop opts mods emptyUDFM) >>= \case
+    Right acc -> pure (eltsUDFM acc)
+    Left err -> throwProgramError opts (message err)
+  where
+    message = \case
+      NoInterface err -> missingInterfaceErrorDiagnostic (ldMsgOpts opts) err
+      LinkBootModule m ->
+        text "module" <+> ppr m <+> text "cannot be linked; it is only available as a boot module"
+
+depsLoop ::
+  LinkDepsOpts ->
+  [Module] ->
+  UniqDFM UnitId LinkDep ->
+  ExceptT OneshotError IO (UniqDFM UnitId LinkDep)
+depsLoop _ [] acc = pure acc
+depsLoop opts (m : rest) acc
+  | alreadySeen = depsLoop opts rest acc
+  | isHome || packageByteCode = do
+      (acc', new) <- viaIface
+      depsLoop opts (new ++ rest) acc'
+  | otherwise = depsLoop opts rest (addLibrary acc)
+  where
+    unitId = moduleUnitId m
+    name = moduleName m
+
+    -- Keyed by unit: once a unit is linked as a library, none of its modules
+    -- needs looking at again.
+    alreadySeen = case lookupUDFM acc unitId of
+      Just (LinkModules seen) -> elemUDFM name seen
+      Just (LinkLibrary _) -> True
+      Nothing -> False
+
+    isHome = case ue_homeUnit (ldUnitEnv opts) of
+      Just home -> homeUnitAsUnit home == moduleUnit m
+      Nothing -> False
+
+    packageByteCode = ldPkgByteCode opts
+
+    viaIface =
+      liftIO (ldLoadIface opts reason m) >>= \case
+        Failed err -> throwE (NoInterface err)
+        Succeeded (iface, loc) -> do
+          loadByteCode <- liftIO (ldLoadByteCode opts (mi_module iface))
+          choose iface loc loadByteCode
+
+    reason = text "need to link module" <+> ppr m <+> text "due to use of Template Haskell"
+
+    choose iface loc loadByteCode
+      | IsBoot <- mi_boot iface = throwE (LinkBootModule m)
+      | ldUseByteCode opts, Just bc <- loadByteCode = pure (withModule iface (LinkByteCodeModule m bc))
+      | isHome = pure (withModule iface (LinkObjectModule m loc))
+      | otherwise = pure (addLibrary acc, [])
+
+    addLibrary a = addToUDFM a unitId (LinkLibrary unitId)
+
+    withModule :: ModIface -> LinkModule -> (UniqDFM UnitId LinkDep, [Module])
+    withModule iface lm =
+      (addListToUDFM (alterUDFM (addModule lm) acc unitId) libs, local ++ packages)
+      where
+        local =
+          [mkModule (moduleUnit m) dep | (_, GWIB dep _) <- Set.toList (dep_direct_mods (mi_deps iface))]
+        !(!libs, !packages)
+          | packageByteCode = ([], [usg_mod | UsagePackageModule {usg_mod} <- mi_usages iface])
+          | otherwise = ([(u, LinkLibrary u) | u <- Set.toList (dep_direct_pkgs (mi_deps iface))], [])
+
+    addModule :: LinkModule -> Maybe LinkDep -> Maybe LinkDep
+    addModule lm = \case
+      Just (LinkLibrary u) -> Just (LinkLibrary u)
+      Just (LinkModules old) -> Just (LinkModules (addToUDFM old name lm))
+      Nothing -> Just (LinkModules (unitUDFM name lm))
+
+-- GHC's own classify_deps, which the patch leaves unexported.
+classifyDeps :: LoaderState -> [LinkDep] -> ([Linkable], [LinkModule], UniqDSet UnitId, [UnitId])
+classifyDeps pls deps =
+  (loaded, needed, allPackages, neededPackages)
+  where
+    (loaded, needed) = partitionWith loadedOrNeeded (concatMap eltsUDFM modules)
+
+    (modules, packages) = flip partitionWith deps $ \case
+      LinkModules ms -> Left ms
+      LinkLibrary lib -> Right lib
+
+    allPackages = mkUniqDSet packages
+    neededPackages = eltsUDFM (getUniqDSet allPackages `minusUDFM` pkgs_loaded pls)
+
+    loadedOrNeeded lm = maybe (Right lm) Left (loadedModule (linkModule lm))
+
+    loadedModule m = lookupModuleEnv (objs_loaded pls) m <|> lookupModuleEnv (bcos_loaded pls) m
+
+linkModule :: LinkModule -> Module
+linkModule = \case
+  LinkHomeModule hmi -> mi_module (hm_iface hmi)
+  LinkObjectModule m _ -> m
+  LinkByteCodeModule m _ -> m
+
+throwProgramError :: LinkDepsOpts -> SDoc -> IO a
+throwProgramError opts doc = throwGhcExceptionIO (ProgramError (renderWithContext (ldPprOpts opts) doc))
