@@ -47,6 +47,7 @@ load(
     "traverse_extra_libraries",
 )
 load(":oneshot_linkables.bzl", "OneshotLinkablesInfo")
+load(":worker_config.bzl", "oneshot_preload_all_enabled")
 load(
     ":toolchain.bzl",
     "DynamicHaskellToolchainPackageDbInfo",
@@ -1261,6 +1262,14 @@ def _compile_oneshot_args(
         args.add("-fpackage-db-byte-code")
         if oneshot_linkables != None:
             args.add(oneshot_linkables)
+    elif oneshot_linkables != None and oneshot_preload_all_enabled():
+        # A module without splices can still need an instance that only make
+        # mode puts in scope: coercing `Key Foo` to its representation needs
+        # the data family instance, which a oneshot compile finds only if
+        # the plugin has loaded the defining interface. Loading a plugin
+        # starts the linker, which loads the packages' native libraries.
+        args.add(oneshot_linkables)
+        args.add(cmd_args(hidden = common_args.extra_libs))
 
         # The splices run in this process and load every package they reach,
         # native libraries included; see `CommonCompileModuleArgs.extra_libs`.

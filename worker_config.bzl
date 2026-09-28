@@ -18,3 +18,11 @@ def oneshot_linkables_enabled() -> bool:
     if value in ["true", "false"]:
         return value == "true"
     fail("haskell.oneshot_linkables must be `true` or `false`, got `{}`".format(value))
+
+# Also load the oneshot plugin into compiles without Template Haskell, for
+# the instances make mode would have in scope; see compile.bzl.
+def oneshot_preload_all_enabled() -> bool:
+    value = read_root_config("haskell", "oneshot_preload_all", "false").lower()
+    if value in ["true", "false"]:
+        return value == "true"
+    fail("haskell.oneshot_preload_all must be `true` or `false`, got `{}`".format(value))
