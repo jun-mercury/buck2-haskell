@@ -53,7 +53,7 @@ import GHC.Driver.Env (hscInterp)
 import GHC.Driver.Env.Types (Hsc, HscEnv (..))
 import GHC.Driver.Main (getHscEnv)
 import GHC.Driver.Plugins (Plugin (..), defaultPlugin, purePlugin)
-import GHC.Iface.Load (WhereFrom (ImportBySystem), loadInterface)
+import GHC.Iface.Load (WhereFrom (ImportBySystem), loadInterface, loadSysInterface)
 import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
 import GHC.Iface.Errors.Types (MissingInterfaceError)
 import qualified GHC.LanguageExtensions as LangExt
@@ -132,11 +132,15 @@ loadInterfaces summary = do
     runsSplices :: DynFlags -> Bool
     runsSplices dflags = xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
 
+    -- A direct import that fails to load is the renamer's error to report. A
+    -- family-instance module that fails is ours: GHC's own
+    -- loadDependentFamInstModules stops on it too, and a silent skip would
+    -- bring the original type error back with no hint of why.
     loadFamInstModules :: [Module] -> IfG ()
     loadFamInstModules direct = forM_ direct $ \m ->
       loadInterface reason m ImportBySystem >>= \case
         Failed _ -> pure ()
-        Succeeded iface -> forM_ (dep_finsts (mi_deps iface)) $ \d -> loadInterface reason d ImportBySystem
+        Succeeded iface -> forM_ (dep_finsts (mi_deps iface)) $ \d -> loadSysInterface reason d
       where
         reason = text "family instances make mode would see"
 
