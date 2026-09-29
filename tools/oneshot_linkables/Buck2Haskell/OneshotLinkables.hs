@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
@@ -20,7 +21,12 @@
 --   nothing, so the splice fails on an unresolved closure symbol.
 --
 -- This plugin installs the oneshot half of the resolver as it stood before that
--- patch. In make mode it defers to GHC's own resolver.
+-- patch. In make mode it defers to GHC's own resolver. That half is compiled
+-- only under @BUCK2_HASKELL_ONESHOT_LINKER@, which the builder defines when
+-- @haskell.oneshot_linker@ is on: it names 'resolveLinkDeps' and
+-- 'selectLinkDeps', which only 155b0ba4 exports. The earlier revision of the
+-- patch, e11740a9, keeps the oneshot half inside 'getLinkDeps', and a GHC on
+-- it, or a stock one, needs only the interface loading below.
 --
 -- It also loads interfaces before the renamer runs, because make mode has
 -- more of them in memory than a oneshot compile does. In make mode the
@@ -42,21 +48,32 @@
 -- imported directly and generates different code from make mode.
 module Buck2Haskell.OneshotLinkables (plugin) where
 
-import Control.Applicative ((<|>))
 import Control.Monad (forM_, when)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import qualified Data.Set as Set
 import GHC.Data.Maybe (MaybeErr (..))
 import GHC.Driver.DynFlags (DynFlags, ghcMode, isOneShot, xopt)
-import GHC.Driver.Env (hscInterp)
 import GHC.Driver.Env.Types (Hsc, HscEnv (..))
 import GHC.Driver.Main (getHscEnv)
 import GHC.Driver.Plugins (Plugin (..), defaultPlugin, purePlugin)
 import GHC.Iface.Load (WhereFrom (ImportBySystem), loadInterface, loadSysInterface)
+import qualified GHC.LanguageExtensions as LangExt
+import GHC.Tc.Utils.Monad (IfG, initIfaceLoad)
+import GHC.Types.SrcLoc (unLoc)
+import GHC.Unit.Finder (FindResult (Found), findImportedModule)
+import GHC.Unit.Module (Module, mkModule, moduleUnit)
+import GHC.Unit.Module.Deps (Dependencies (..), Usage (..))
+import GHC.Unit.Module.ModSummary (ModSummary, ms_hspp_opts, ms_textual_imps)
+import GHC.Unit.Module.ModIface (mi_deps, mi_usages)
+import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..))
+import GHC.Utils.Outputable (text)
+
+#ifdef BUCK2_HASKELL_ONESHOT_LINKER
+import Control.Applicative ((<|>))
+import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
+import GHC.Driver.Env (hscInterp)
 import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
 import GHC.Iface.Errors.Types (MissingInterfaceError)
-import qualified GHC.LanguageExtensions as LangExt
 import GHC.Linker.Deps
   ( LinkDep (..)
   , LinkDepsOpts (..)
@@ -66,7 +83,6 @@ import GHC.Linker.Deps
   )
 import GHC.Linker.Loader (initLinkDepsOpts)
 import GHC.Linker.Types (Linkable, Linkables (..), LoaderState (..))
-import GHC.Tc.Utils.Monad (IfG, initIfaceLoad)
 import GHC.Types.SrcLoc (SrcSpan)
 import GHC.Types.Unique.DFM
   ( UniqDFM
@@ -81,29 +97,29 @@ import GHC.Types.Unique.DFM
   , unitUDFM
   )
 import GHC.Types.Unique.DSet (UniqDSet, getUniqDSet, mkUniqDSet)
-import GHC.Types.SrcLoc (unLoc)
 import GHC.Unit.Env (ue_homeUnit)
-import GHC.Unit.Finder (FindResult (Found), findImportedModule)
 import GHC.Unit.Home (homeUnitAsUnit)
 import GHC.Unit.Home.ModInfo (hm_iface)
-import GHC.Unit.Module (Module, mkModule, moduleName, moduleUnit, moduleUnitId)
-import GHC.Unit.Module.Deps (Dependencies (..), Usage (..))
+import GHC.Unit.Module (moduleName, moduleUnitId)
 import GHC.Unit.Module.Env (lookupModuleEnv)
-import GHC.Unit.Module.ModSummary (ModSummary, ms_hspp_opts, ms_textual_imps)
-import GHC.Unit.Module.ModIface (ModIface, mi_boot, mi_deps, mi_module, mi_usages)
-import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..), UnitId)
+import GHC.Unit.Module.ModIface (ModIface, mi_boot, mi_module)
+import GHC.Unit.Types (UnitId)
 import GHC.Utils.Misc (partitionWith)
-import GHC.Utils.Outputable (SDoc, ppr, renderWithContext, text, (<+>))
+import GHC.Utils.Outputable (SDoc, ppr, renderWithContext, (<+>))
 import GHC.Utils.Panic (GhcException (ProgramError), throwGhcExceptionIO)
+#endif
 
 plugin :: Plugin
 plugin =
   defaultPlugin
-    { driverPlugin = \_ hsc_env -> pure hsc_env {hsc_linkables = linkables}
-    , parsedResultAction = \_ summary parsed -> parsed <$ loadInterfaces summary
+    { parsedResultAction = \_ summary parsed -> parsed <$ loadInterfaces summary
     , pluginRecompile = purePlugin
+#ifdef BUCK2_HASKELL_ONESHOT_LINKER
+    , driverPlugin = \_ hsc_env -> pure hsc_env {hsc_linkables = linkables}
+#endif
     }
 
+#ifdef BUCK2_HASKELL_ONESHOT_LINKER
 linkables :: HscEnv -> LoaderState -> IO Linkables
 linkables hsc_env pls =
   pure
@@ -118,6 +134,7 @@ linkables hsc_env pls =
     resolve span mods
       | ldOneShotMode opts = classifyDeps pls <$> oneshotDeps opts mods
       | otherwise = resolveLinkDeps opts pls span mods
+#endif
 
 loadInterfaces :: ModSummary -> Hsc ()
 loadInterfaces summary = do
@@ -157,6 +174,7 @@ loadInterfaces summary = do
           [mkModule (moduleUnit m) dep | (_, GWIB dep NotBoot) <- Set.toList (dep_direct_mods (mi_deps iface))]
             ++ [usg_mod | UsagePackageModule {usg_mod} <- mi_usages iface]
 
+#ifdef BUCK2_HASKELL_ONESHOT_LINKER
 data OneshotError
   = NoInterface !MissingInterfaceError
   | LinkBootModule !Module
@@ -260,3 +278,4 @@ linkModule = \case
 
 throwProgramError :: LinkDepsOpts -> SDoc -> IO a
 throwProgramError opts doc = throwGhcExceptionIO (ProgramError (renderWithContext (ldPprOpts opts) doc))
+#endif
