@@ -15,7 +15,7 @@ import sys
 
 UNIT = "buck2-haskell-oneshot-linkables"
 MODULE = "Buck2Haskell.OneshotLinkables"
-PACKAGES = ["base", "containers", "ghc", "transformers"]
+PACKAGES = ["base", "containers", "ghc", "ghc-boot", "transformers"]
 
 
 def run(cmd, **kwargs):
