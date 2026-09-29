@@ -27,3 +27,12 @@ def oneshot_linker_enabled() -> bool:
     if value in ["true", "false"]:
         return value == "true"
     fail("haskell.oneshot_linker must be `true` or `false`, got `{}`".format(value))
+
+# Whether a compile with splices loads its whole import closure first. On, a
+# module at the top of a large graph loads every interface below it, which
+# an executor with a memory limit per action can refuse.
+def oneshot_th_closure_enabled() -> bool:
+    value = read_root_config("haskell", "oneshot_th_closure", "true").lower()
+    if value in ["true", "false"]:
+        return value == "true"
+    fail("haskell.oneshot_th_closure must be `true` or `false`, got `{}`".format(value))
