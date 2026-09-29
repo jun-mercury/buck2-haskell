@@ -45,7 +45,11 @@
 -- imports transitively, since 'reifyInstances' enumerates class instances
 -- from the interfaces that are loaded. Without it a splice such as
 -- persistent's @discoverEntities@ finds only the instances of the modules
--- imported directly and generates different code from make mode.
+-- imported directly and generates different code from make mode. The plugin
+-- option @no-th-closure@ turns that off: a module at the top of a large graph
+-- loads the whole graph this way, which on an executor with a memory limit
+-- per action kills the compile, and a tree whose splices reify nothing an
+-- import list would hide can leave the closure out.
 module Buck2Haskell.OneshotLinkables (plugin) where
 
 import Control.Monad (forM_, when)
@@ -55,7 +59,7 @@ import GHC.Data.Maybe (MaybeErr (..))
 import GHC.Driver.DynFlags (DynFlags, ghcMode, isOneShot, xopt)
 import GHC.Driver.Env.Types (Hsc, HscEnv (..))
 import GHC.Driver.Main (getHscEnv)
-import GHC.Driver.Plugins (Plugin (..), defaultPlugin, purePlugin)
+import GHC.Driver.Plugins (CommandLineOption, Plugin (..), defaultPlugin, purePlugin)
 import GHC.Iface.Load (WhereFrom (ImportBySystem), loadInterface, loadSysInterface)
 import qualified GHC.LanguageExtensions as LangExt
 import GHC.Tc.Utils.Monad (IfG, initIfaceLoad)
@@ -112,7 +116,7 @@ import GHC.Utils.Panic (GhcException (ProgramError), throwGhcExceptionIO)
 plugin :: Plugin
 plugin =
   defaultPlugin
-    { parsedResultAction = \_ summary parsed -> parsed <$ loadInterfaces summary
+    { parsedResultAction = \opts summary parsed -> parsed <$ loadInterfaces opts summary
     , pluginRecompile = purePlugin
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER
     , driverPlugin = \_ hsc_env -> pure hsc_env {hsc_linkables = linkables}
@@ -136,15 +140,15 @@ linkables hsc_env pls =
       | otherwise = resolveLinkDeps opts pls span mods
 #endif
 
-loadInterfaces :: ModSummary -> Hsc ()
-loadInterfaces summary = do
+loadInterfaces :: [CommandLineOption] -> ModSummary -> Hsc ()
+loadInterfaces opts summary = do
   hsc_env <- getHscEnv
   when (isOneShot (ghcMode (hsc_dflags hsc_env))) $ liftIO $ do
     found <- traverse (\(qual, name) -> findImportedModule hsc_env (unLoc name) qual) (ms_textual_imps summary)
     let direct = [m | Found _ m <- found]
     initIfaceLoad hsc_env $ do
       loadFamInstModules direct
-      when (runsSplices (ms_hspp_opts summary)) (visit Set.empty direct)
+      when (runsSplices (ms_hspp_opts summary) && "no-th-closure" `notElem` opts) (visit Set.empty direct)
   where
     runsSplices :: DynFlags -> Bool
     runsSplices dflags = xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
