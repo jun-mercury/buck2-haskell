@@ -1242,14 +1242,20 @@ def _compile_oneshot_args(
     output_dir = cmd_args([cmd_args(md_file, ignore_artifacts = True, parent = 1), module.prefix_dir], delimiter = "/")
     add_output_dirs(args, output_dir)
 
-    if enable_th:
+    # Every oneshot compile loads the plugin, not only one that runs splices.
+    # A module without Template Haskell needs the family-instance modules make
+    # mode would have in scope as much as one with them, and the plugin is
+    # what loads them. See tools/oneshot_linkables/Buck2Haskell/OneshotLinkables.hs.
+    # Loading a plugin initialises GHC's loader, which preloads every unit the
+    # compile names (GHC.Linker.Loader, Note [preload packages]), so a compile
+    # that loads the plugin needs what a splice-running compile needs: the
+    # byte-code flags and the dependencies' native libraries as inputs, see
+    # `CommonCompileModuleArgs.extra_libs`.
+    if enable_th or oneshot_linkables != None:
         args.add("-fprefer-byte-code")
         args.add("-fpackage-db-byte-code")
         if oneshot_linkables != None:
             args.add(oneshot_linkables)
-
-        # The splices run in this process and load every package they reach,
-        # native libraries included; see `CommonCompileModuleArgs.extra_libs`.
         args.add(cmd_args(hidden = common_args.extra_libs))
 
     if module.stub_dir != None:
