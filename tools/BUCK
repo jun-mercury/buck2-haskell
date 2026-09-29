@@ -1,5 +1,5 @@
 load("@buck2-haskell//:oneshot_linkables.bzl", "haskell_oneshot_linkables")
-load("@buck2-haskell//:worker_config.bzl", "oneshot_linker_enabled")
+load("@buck2-haskell//:worker_config.bzl", "oneshot_linker_enabled", "oneshot_th_closure_enabled")
 load("@prelude//utils:source_listing.bzl", "source_listing")
 
 oncall("build_infra")
@@ -54,5 +54,6 @@ haskell_oneshot_linkables(
     name = "oneshot_linkables",
     linker = oneshot_linker_enabled(),
     src = "oneshot_linkables/Buck2Haskell/OneshotLinkables.hs",
+    th_closure = oneshot_th_closure_enabled(),
     visibility = ["PUBLIC"],
 )
