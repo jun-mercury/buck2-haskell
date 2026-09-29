@@ -18,3 +18,12 @@ def oneshot_linkables_enabled() -> bool:
     if value in ["true", "false"]:
         return value == "true"
     fail("haskell.oneshot_linkables must be `true` or `false`, got `{}`".format(value))
+
+# Whether the plugin also installs the oneshot linker resolver. A GHC with
+# 155b0ba4 has none; one with the earlier revision e11740a9, or a stock one,
+# keeps its own, and the plugin then compiles against the stock GHC API.
+def oneshot_linker_enabled() -> bool:
+    value = read_root_config("haskell", "oneshot_linker", "true").lower()
+    if value in ["true", "false"]:
+        return value == "true"
+    fail("haskell.oneshot_linker must be `true` or `false`, got `{}`".format(value))
