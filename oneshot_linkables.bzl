@@ -39,6 +39,7 @@ def _oneshot_linkables_impl(ctx: AnalysisContext) -> list[Provider]:
             "-plugin-package-id",
             "buck2-haskell-oneshot-linkables",
             "-fplugin=Buck2Haskell.OneshotLinkables",
+            [] if ctx.attrs.th_closure else ["-fplugin-opt=Buck2Haskell.OneshotLinkables:no-th-closure"],
         ), preload_args = cmd_args(
             out,
             format = "-fplugin-library={}/plugin.so;buck2-haskell-oneshot-linkables;Buck2Haskell.OneshotLinkables;[]",
@@ -52,6 +53,10 @@ haskell_oneshot_linkables = rule(
         # GHC with MercuryTechnologies/ghc 155b0ba4 has the API it names.
         "linker": attrs.bool(),
         "src": attrs.source(),
+        # Load the import closure before a splice runs, for a `reifyInstances`
+        # that enumerates class instances. Off, a splice sees the instances of
+        # the interfaces GHC loads on its own.
+        "th_closure": attrs.bool(),
         "_builder": attrs.exec_dep(
             providers = [RunInfo],
             default = "@buck2-haskell//tools:build_oneshot_linkables",
