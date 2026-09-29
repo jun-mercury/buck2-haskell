@@ -31,6 +31,8 @@ def main():
     parser.add_argument("--ghc-pkg", required=True)
     parser.add_argument("--src", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--linker", action="store_true",
+                        help="also compile the linker resolver, for a GHC with 155b0ba4")
     args = parser.parse_args()
 
     out = os.path.abspath(args.out)
@@ -50,6 +52,8 @@ def main():
     common = ["-hide-all-packages", "-package-env=-", "-this-unit-id", UNIT]
     for p in PACKAGES:
         common += ["-package", p]
+    if args.linker:
+        common += ["-DBUCK2_HASKELL_ONESHOT_LINKER"]
 
     # -dynamic-too gives both interface flavours: a compile loads the plugin's
     # interface with its own -hisuf, which is dyn_hi for shared compiles and hi

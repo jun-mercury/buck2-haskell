@@ -28,6 +28,7 @@ def _oneshot_linkables_impl(ctx: AnalysisContext) -> list[Provider]:
             ctx.attrs.src,
             "--out",
             out.as_output(),
+            cmd_args("--linker") if ctx.attrs.linker else cmd_args(),
         ),
         category = "haskell_oneshot_linkables",
     )
@@ -47,6 +48,9 @@ def _oneshot_linkables_impl(ctx: AnalysisContext) -> list[Provider]:
 haskell_oneshot_linkables = rule(
     impl = _oneshot_linkables_impl,
     attrs = {
+        # Compile the linker resolver as well as the interface loading. Only a
+        # GHC with MercuryTechnologies/ghc 155b0ba4 has the API it names.
+        "linker": attrs.bool(),
         "src": attrs.source(),
         "_builder": attrs.exec_dep(
             providers = [RunInfo],
