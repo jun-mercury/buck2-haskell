@@ -22,22 +22,33 @@
 -- This plugin installs the oneshot half of the resolver as it stood before that
 -- patch. In make mode it defers to GHC's own resolver.
 --
--- It also loads, before the renamer runs any splice, the interface of every
--- module the compiled module imports transitively. The worker's make mode
--- treats the build's libraries as home units, and there 'reifyInstances' sees
--- the instances of every home module below the current one. A oneshot compile
--- loads an interface only when a name from it is needed, so a splice that
--- enumerates instances, such as persistent's @discoverEntities@, finds only
--- those of the modules imported directly and generates different code.
+-- It also loads interfaces before the renamer runs, because make mode has
+-- more of them in memory than a oneshot compile does. In make mode the
+-- build's libraries are home units and the type checker starts from the
+-- family instances of every home module below the current one. A oneshot
+-- compile loads a non-orphan family-instance module only once a name from it
+-- is forced. The constraint solver snapshots the family-instance environment
+-- before it looks at a wanted, so a 'Coercible' through two data-family
+-- newtype layers fails on the inner one, and injectivity improvement never
+-- sees a @type instance@ for a type the module does not name. The modules to
+-- load are each direct import's @dep_finsts@, the set GHC's own
+-- @loadDependentFamInstModules@ loads for a module that defines a family
+-- instance itself.
+--
+-- A module that runs splices also gets the interface of every module it
+-- imports transitively, since 'reifyInstances' enumerates class instances
+-- from the interfaces that are loaded. Without it a splice such as
+-- persistent's @discoverEntities@ finds only the instances of the modules
+-- imported directly and generates different code from make mode.
 module Buck2Haskell.OneshotLinkables (plugin) where
 
 import Control.Applicative ((<|>))
-import Control.Monad (when)
+import Control.Monad (forM_, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import qualified Data.Set as Set
 import GHC.Data.Maybe (MaybeErr (..))
-import GHC.Driver.DynFlags (ghcMode, isOneShot)
+import GHC.Driver.DynFlags (DynFlags, ghcMode, isOneShot, xopt)
 import GHC.Driver.Env (hscInterp)
 import GHC.Driver.Env.Types (Hsc, HscEnv (..))
 import GHC.Driver.Main (getHscEnv)
@@ -45,6 +56,7 @@ import GHC.Driver.Plugins (Plugin (..), defaultPlugin, purePlugin)
 import GHC.Iface.Load (WhereFrom (ImportBySystem), loadInterface)
 import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
 import GHC.Iface.Errors.Types (MissingInterfaceError)
+import qualified GHC.LanguageExtensions as LangExt
 import GHC.Linker.Deps
   ( LinkDep (..)
   , LinkDepsOpts (..)
@@ -77,7 +89,7 @@ import GHC.Unit.Home.ModInfo (hm_iface)
 import GHC.Unit.Module (Module, mkModule, moduleName, moduleUnit, moduleUnitId)
 import GHC.Unit.Module.Deps (Dependencies (..), Usage (..))
 import GHC.Unit.Module.Env (lookupModuleEnv)
-import GHC.Unit.Module.ModSummary (ModSummary, ms_textual_imps)
+import GHC.Unit.Module.ModSummary (ModSummary, ms_hspp_opts, ms_textual_imps)
 import GHC.Unit.Module.ModIface (ModIface, mi_boot, mi_deps, mi_module, mi_usages)
 import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..), UnitId)
 import GHC.Utils.Misc (partitionWith)
@@ -88,7 +100,7 @@ plugin :: Plugin
 plugin =
   defaultPlugin
     { driverPlugin = \_ hsc_env -> pure hsc_env {hsc_linkables = linkables}
-    , parsedResultAction = \_ summary parsed -> parsed <$ loadImportClosure summary
+    , parsedResultAction = \_ summary parsed -> parsed <$ loadInterfaces summary
     , pluginRecompile = purePlugin
     }
 
@@ -107,13 +119,27 @@ linkables hsc_env pls =
       | ldOneShotMode opts = classifyDeps pls <$> oneshotDeps opts mods
       | otherwise = resolveLinkDeps opts pls span mods
 
-loadImportClosure :: ModSummary -> Hsc ()
-loadImportClosure summary = do
+loadInterfaces :: ModSummary -> Hsc ()
+loadInterfaces summary = do
   hsc_env <- getHscEnv
   when (isOneShot (ghcMode (hsc_dflags hsc_env))) $ liftIO $ do
     found <- traverse (\(qual, name) -> findImportedModule hsc_env (unLoc name) qual) (ms_textual_imps summary)
-    initIfaceLoad hsc_env (visit Set.empty [m | Found _ m <- found])
+    let direct = [m | Found _ m <- found]
+    initIfaceLoad hsc_env $ do
+      loadFamInstModules direct
+      when (runsSplices (ms_hspp_opts summary)) (visit Set.empty direct)
   where
+    runsSplices :: DynFlags -> Bool
+    runsSplices dflags = xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
+
+    loadFamInstModules :: [Module] -> IfG ()
+    loadFamInstModules direct = forM_ direct $ \m ->
+      loadInterface reason m ImportBySystem >>= \case
+        Failed _ -> pure ()
+        Succeeded iface -> forM_ (dep_finsts (mi_deps iface)) $ \d -> loadInterface reason d ImportBySystem
+      where
+        reason = text "family instances make mode would see"
+
     visit :: Set.Set Module -> [Module] -> IfG ()
     visit _ [] = pure ()
     visit seen (m : rest)
