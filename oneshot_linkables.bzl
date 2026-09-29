@@ -4,8 +4,14 @@
 
 load(":toolchain.bzl", "HaskellToolchainInfo", "haskell_toolchain")
 
+# `ghc_args` loads the plugin as a package, through GHC's loader, which a
+# splice-running compile initialises anyway. `preload_args` loads it with
+# -fplugin-library, a plain dlopen: the loader stays down, so a compile
+# without splices links none of its dependencies' libraries and records no
+# library usages in its interface.
 OneshotLinkablesInfo = provider(fields = {
     "ghc_args": provider_field(cmd_args),
+    "preload_args": provider_field(cmd_args),
 })
 
 def _oneshot_linkables_impl(ctx: AnalysisContext) -> list[Provider]:
@@ -32,6 +38,9 @@ def _oneshot_linkables_impl(ctx: AnalysisContext) -> list[Provider]:
             "-plugin-package-id",
             "buck2-haskell-oneshot-linkables",
             "-fplugin=Buck2Haskell.OneshotLinkables",
+        ), preload_args = cmd_args(
+            out,
+            format = "-fplugin-library={}/plugin.so;buck2-haskell-oneshot-linkables;Buck2Haskell.OneshotLinkables;[]",
         )),
     ]
 
