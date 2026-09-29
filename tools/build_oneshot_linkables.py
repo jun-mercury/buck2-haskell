@@ -60,6 +60,9 @@ def main():
     dyn_o = os.path.join(obj, *MODULE.split(".")) + ".dyn_o"
     so = os.path.join(lib, "libHS{}-ghc{}.so".format(UNIT, version))
     run([args.ghc, *common, "-shared", "-dynamic", "-o", so, dyn_o])
+    # A compile without splices loads the library through -fplugin-library,
+    # which names the file itself; the name must not carry the GHC version.
+    os.symlink(os.path.relpath(so, out), os.path.join(out, "plugin.so"))
     shutil.rmtree(obj)
 
     conf = os.path.join(out, UNIT + ".conf")
