@@ -594,7 +594,7 @@ def _dynamic_target_metadata_impl(
             md_args,
             category = "haskell_metadata",
             identifier = arg.suffix if arg.suffix else None,
-            exe = WorkerRunInfo(worker = arg.worker, exe = worker_fallback(haskell_toolchain)),
+            exe = worker_exe(arg.worker, haskell_toolchain),
             allow_cache_upload = arg.allow_cache_upload,
         )
     else:
@@ -671,7 +671,7 @@ def target_metadata(
     linker_info = get_cxx_toolchain_info(ctx).linker_info
 
     allow_worker = ctx.attrs.allow_worker
-    is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker)
+    is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
 
     toolchain_libs = [dep.name for dep in attr_deps_haskell_toolchain_libraries(ctx)]
 
@@ -943,16 +943,19 @@ def add_worker_args(
         pkgname: str) -> None:
     command.add("--worker-target-id", "singleton")
 
-# `WorkerRunInfo.exe` is what buck2 runs when it does not run the worker: on a
-# remote executor, or on a platform without `use_persistent_workers`. The
-# toolchain's `worker_client` is that command, a client whose command line is
-# the request and whose exit code is the response's; the request's arguments
-# follow it unchanged. Without a client the list stays empty, and such an
-# action cannot run outside the worker, as before.
-def worker_fallback(haskell_toolchain: HaskellToolchainInfo) -> list | RunInfo:
-    if haskell_toolchain.worker_client:
+# The executable of a worker request. With a worker instance it is
+# `WorkerRunInfo`, whose `exe` is what buck2 runs when it does not run the
+# worker: on a remote executor, or on a platform without
+# `use_persistent_workers`. The toolchain's `worker_client` is that command,
+# a client whose command line is the request and whose exit code is the
+# response's; the request's arguments follow it unchanged. Without a client
+# the list stays empty, and such an action cannot run outside the worker, as
+# before. Without a worker instance the request can only go through the
+# client, so the client is the executable (see `check_is_worker_execute`).
+def worker_exe(worker: WorkerInfo | None, haskell_toolchain: HaskellToolchainInfo) -> WorkerRunInfo | RunInfo:
+    if worker == None:
         return haskell_toolchain.worker_client
-    return []
+    return WorkerRunInfo(worker = worker, exe = haskell_toolchain.worker_client or [])
 
 def make_package_env(
         *,
@@ -976,7 +979,7 @@ def make_package_env(
     ]))
     package_env = cmd_args(delimiter = "\n")
 
-    is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker)
+    is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
     if not is_worker_execute:
         package_env.add(cmd_args(
             packagedb_args,
@@ -1474,7 +1477,7 @@ def _compile_module(
         module_plugin_tool_paths: typing.Any = None,
         oneshot_linkables: cmd_args | None = None,
         oneshot_preload: cmd_args | None = None) -> CompiledModuleTSet:
-    is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker)
+    is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
 
     abi_tag = actions.artifact_tag()
     packagedb_tag = actions.artifact_tag()
@@ -1649,8 +1652,8 @@ def _compile_module(
         compile_cmd_args.add(compile_args_for_file)
 
     worker_args = {}
-    if worker != None and is_worker_execute:
-        worker_args["exe"] = WorkerRunInfo(worker = worker, exe = worker_fallback(haskell_toolchain))
+    if is_worker_execute:
+        worker_args["exe"] = worker_exe(worker, haskell_toolchain)
 
     actions.run(
         cmd_args(
@@ -1710,7 +1713,7 @@ def _compile_incr(
         package_deps: dict[str, dict[str, list[str]]],  # `dict[modname, dict[pkgname, list[modname]]`
         direct_deps_by_name: dict[str, _DirectDep],
         outputs: ArtifactOutputMap) -> None:
-    is_worker_execute = check_is_worker_execute(arg.worker, arg.allow_worker, arg.haskell_toolchain.use_worker)
+    is_worker_execute = check_is_worker_execute(arg.worker, arg.allow_worker, arg.haskell_toolchain.use_worker, arg.haskell_toolchain.worker_client)
     deps_by_name = DepsByNameInfo(
         direct = direct_deps_by_name,
         toolchain = arg.toolchain_deps_by_name,
@@ -2055,7 +2058,7 @@ def _dynamic_do_compile_impl(
             graph_set[module_name] = tset
             return tset
 
-    is_worker_execute = check_is_worker_execute(arg.worker, arg.allow_worker, arg.haskell_toolchain.use_worker)
+    is_worker_execute = check_is_worker_execute(arg.worker, arg.allow_worker, arg.haskell_toolchain.use_worker, arg.haskell_toolchain.worker_client)
     graph_set = {}
     if not is_worker_execute:
         for m in module_graph.keys():
@@ -2140,7 +2143,7 @@ def compile(
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     linker_info = get_cxx_toolchain_info(ctx).linker_info
 
-    is_worker_execute = check_is_worker_execute(worker, ctx.attrs.allow_worker, haskell_toolchain.use_worker)
+    is_worker_execute = check_is_worker_execute(worker, ctx.attrs.allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
 
     modules = _modules_by_name(
         ctx,
@@ -2203,7 +2206,7 @@ def compile(
         ),
     )
 
-    is_worker_execute = check_is_worker_execute(worker, ctx.attrs.allow_worker, haskell_toolchain.use_worker)
+    is_worker_execute = check_is_worker_execute(worker, ctx.attrs.allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
 
     dyn_module_tsets = ctx.actions.dynamic_output_new(_dynamic_do_compile(
         incremental = incremental,
