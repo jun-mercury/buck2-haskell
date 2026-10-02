@@ -1,0 +1,36 @@
+load("@buck2-haskell//:defs.bzl", "haskell_library")
+load(":rules.bzl", "deps_db_test")
+
+# The deps db a one-shot library's metadata action registers, read by a
+# dependent's `ghc -M`. `allow_worker = False` keeps both libraries on the
+# metadata action that registers the db whatever the toolchain's worker
+# setting is.
+haskell_library(
+    name = "dep",
+    srcs = ["Dep.hs"],
+    deps = ["//tests:base"],
+    allow_worker = False,
+)
+
+haskell_library(
+    name = "lib",
+    srcs = [
+        "Lib.hs",
+        "Lib/Inner.hs",
+    ],
+    deps = [
+        ":dep",
+        "//tests:base",
+    ],
+    allow_worker = False,
+)
+
+deps_db_test(
+    name = "test_deps_db",
+    lib = ":lib",
+    deps = [":dep"],
+    modules = [
+        "Lib",
+        "Lib.Inner",
+    ],
+)

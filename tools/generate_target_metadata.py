@@ -26,6 +26,8 @@ import subprocess
 import tempfile
 import copy
 
+from ghc_pkg import register
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -125,6 +127,22 @@ def main():
         type=str,
         help="Metadata files of targets in the dependency closure",
     )
+    parser.add_argument(
+        "--ghc-pkg",
+        type=str,
+        help="Path to ghc-pkg, which registers --package-conf into --package-db.")
+    parser.add_argument(
+        "--package-conf-fields",
+        type=str,
+        help="The fields of the package conf that do not depend on the build plan.")
+    parser.add_argument(
+        "--package-conf",
+        type=str,
+        help="Write the package conf here: --package-conf-fields plus the modules of the build plan.")
+    parser.add_argument(
+        "--package-db",
+        type=str,
+        help="Register the package conf into a new package db here.")
     args = parser.parse_args()
 
     result = obtain_target_metadata(args)
@@ -132,6 +150,20 @@ def main():
     json.dump(
         result, args.output, sort_keys=True, default=json_default_handler
     )
+
+    if args.package_db:
+        write_package_conf(args.package_conf_fields, args.package_conf, result["exposed_modules"])
+        register(args.ghc_pkg, args.package_db, args.package_conf)
+
+
+def write_package_conf(fields_path, conf_path, exposed_modules):
+    with open(fields_path) as f:
+        fields = f.read()
+    with open(conf_path, "w") as f:
+        f.write(fields)
+        if not fields.endswith("\n"):
+            f.write("\n")
+        f.write("exposed-modules: " + ", ".join(sorted(exposed_modules)) + "\n")
 
 
 def json_default_handler(o):

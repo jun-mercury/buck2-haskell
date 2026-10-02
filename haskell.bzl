@@ -55,6 +55,7 @@ load(
 load(
     ":compile.bzl",
     "CompileResultInfo",
+    "TargetMetadata",
     "compile",
     "get_extra_lib_info",
     "target_metadata",
@@ -94,7 +95,7 @@ load(
     "cxx_toolchain_link_style",
     "get_link_infos_from_extra_lib_info",
 )
-load(":pkg_conf.bzl", "append_pkg_conf_link_fields_for_link_infos")
+load(":pkg_conf.bzl", "append_pkg_conf_link_fields_for_link_infos", "package_conf_fields")
 load(":resources.bzl", "haskell_attr_resources")
 load(
     ":toolchain.bzl",
@@ -426,18 +427,6 @@ def _write_package_conf_impl(
             for src_prefix in source_prefixes_excluded
         ]
 
-    toolchain_lib_ids = [info.providers[DynamicHaskellToolchainLibraryInfo].id for info in toolchain_lib_dyn_infos]
-
-    conf = cmd_args(
-        "name: " + arg.pkgname,
-        "version: 1.0.0",
-        "id: " + arg.pkgname,
-        "key: " + arg.pkgname,
-        "exposed: False",
-        "exposed-modules: " + ", ".join(modules),
-        "import-dirs:" + ", ".join(import_dirs),
-    )
-
     def _select_db_conf(lib):
         if arg.purpose == "deps":
             return [lib.deps_db, lib.conf.deps_conf]
@@ -446,10 +435,7 @@ def _write_package_conf_impl(
         else:
             return [lib.db, lib.conf.final_conf]
 
-    toolchain_deps_args = [cmd_args(id) for id in toolchain_lib_ids]
-    project_deps_args = [cmd_args(lib.id, hidden = _select_db_conf(lib)) for lib in arg.hlis]
-    depends = cmd_args(cmd_args(toolchain_deps_args + project_deps_args, delimiter = ", "), format = "depends: {}")
-    conf.add(depends)
+    library_fields = ["exposed-modules: " + ", ".join(modules)]
 
     if not arg.use_empty_lib:
         if not libname:
@@ -465,21 +451,18 @@ def _write_package_conf_impl(
         else:
             library_dirs = [_mk_artifact_dir("lib", profiled, link_style) for profiled in arg.profiling for link_style in [arg.link_style, LinkStyle("shared")]]
 
-        conf.add(cmd_args(cmd_args(library_dirs, delimiter = ","), format = "library-dirs: {}"))
-        conf.add(cmd_args(libname, format = "hs-libraries: {}"))
+        library_fields.append(cmd_args(cmd_args(library_dirs, delimiter = ","), format = "library-dirs: {}"))
+        library_fields.append(cmd_args(libname, format = "hs-libraries: {}"))
 
-    extra_ld_opts = cmd_args(hidden = arg.extra_libs)
-
-    # Extra flags that can be dynamically resolved. For example, -rpath /nix/store/...
-    for dyn in extra_lib_dyns:
-        fs = dyn.providers[ExtraGhcLinkerFlagsInfo].flags
-        extra_ld_opts.add(cmd_args(cmd_args(fs, delimiter = ","), format = "\"-Wl,{}\""))
-
-    append_pkg_conf_link_fields_for_link_infos(
+    conf = package_conf_fields(
         pkgname = arg.pkgname,
-        pkg_conf = conf,
+        import_dirs = import_dirs,
+        toolchain_lib_ids = [info.providers[DynamicHaskellToolchainLibraryInfo].id for info in toolchain_lib_dyn_infos],
+        project_deps = [cmd_args(lib.id, hidden = _select_db_conf(lib)) for lib in arg.hlis],
+        library_fields = library_fields,
         link_infos = arg.link_infos,
-        extra_ld_opts = extra_ld_opts,
+        extra_libs = arg.extra_libs,
+        extra_lib_dyns = extra_lib_dyns,
     )
 
     pkg_conf_artifact = actions.write(pkg_conf, conf, with_inputs = True)
@@ -764,7 +747,7 @@ def _build_haskell_lib(
         link_style: LinkStyle,
         enable_profiling: bool,
         enable_haddock: bool,
-        md_file: Artifact,
+        metadata: TargetMetadata,
         skeleton: Artifact | None = None,
         # The non-profiling artifacts are also needed to build the package for
         # profiling, so it should be passed when `enable_profiling` is True.
@@ -775,6 +758,7 @@ def _build_haskell_lib(
         srcs_plugin_tool_paths = {},
         plugin_toolchain_deps = []) -> HaskellLibBuildOutput:
     linker_info = ctx.attrs._cxx_toolchain[CxxToolchainInfo].linker_info
+    md_file = metadata.plan
 
     # Link the objects into a library
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
@@ -999,19 +983,26 @@ def _build_haskell_lib(
         md_file = md_file,
         extra_lib_info = extra_lib_info,
     )
-    deps_db, deps_conf = _make_package(
-        ctx,
-        link_style,
-        pkgname,
-        None,
-        uniq_infos,
-        interface_artifacts.keys(),
-        enable_profiling = enable_profiling,
-        use_empty_lib = True,
-        md_file = md_file,
-        extra_lib_info = extra_lib_info,
-        for_deps = True,
-    )
+    if metadata.deps_db != None:
+        deps_db, deps_conf = metadata.deps_db, metadata.deps_conf
+    else:
+        # A worker request runs no process of these rules that could register
+        # the db, and its `ghc -M` resolves local packages from the skeletons
+        # (see `metadata_unit_args`). The db is still built, for a one-shot
+        # dependent, whose `ghc -M` reads it.
+        deps_db, deps_conf = _make_package(
+            ctx,
+            link_style,
+            pkgname,
+            None,
+            uniq_infos,
+            interface_artifacts.keys(),
+            enable_profiling = enable_profiling,
+            use_empty_lib = True,
+            md_file = md_file,
+            extra_lib_info = extra_lib_info,
+            for_deps = True,
+        )
 
     hlib = HaskellLibraryInfo(
         name = pkgname,
@@ -1119,7 +1110,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             # This is executed for each output style even though the dependency graph is independent of it.
             # The reason for that is that the persistent worker initializes the module graph fully during this request,
             # requiring the linking and profiling settings to be applied.
-            md_file = target_metadata(
+            metadata = target_metadata(
                 ctx,
                 link_style = link_style,
                 enable_profiling = enable_profiling,
@@ -1129,6 +1120,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 sources = sources,
                 worker = worker,
             )
+            md_file = metadata.plan
             if link_style == LinkStyle("shared") and not enable_profiling:
                 def_md_file = md_file
 
@@ -1144,7 +1136,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 enable_profiling = enable_profiling,
                 # enable haddock only for the first non-profiling hlib
                 enable_haddock = not enable_profiling and not non_profiling_hlib,
-                md_file = md_file,
+                metadata = metadata,
                 skeleton = skeleton,
                 non_profiling_hlib = non_profiling_hlib.get(link_style),
                 unit_plugin_flags = plugin_flags.unit,
@@ -1602,7 +1594,7 @@ def _haskell_executable(ctx: AnalysisContext) -> HaskellExecutableOutput:
         is_binary = True,
         sources = sources,
         worker = worker,
-    )
+    ).plan
 
     (pkgname, libname) = make_haskell_names_from_label(ctx.label, False)
 

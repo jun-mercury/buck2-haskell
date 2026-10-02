@@ -4,6 +4,7 @@ load(
     "SharedLibLinkable",
 )
 load(":library_info.bzl", "get_libname")
+load(":link_info.bzl", "ExtraGhcLinkerFlagsInfo")
 
 # See: https://ghc.gitlab.haskell.org/ghc/doc/users_guide/packages.html#installedpackageinfo-a-package-specification
 PkgConfLinkFields = record(
@@ -74,3 +75,47 @@ def append_pkg_conf_link_fields_for_link_infos(
         link_fields = get_pkg_conf_link_fields(pkgname = pkgname, link_infos = link_infos),
         extra_ld_opts = extra_ld_opts,
     )
+
+# The conf of a unit's package as analysis knows it: identity, dependencies
+# and how its native libraries link. `library_fields` sit between the two,
+# the unit's own `exposed-modules` and, for the final conf, its library; a
+# conf the metadata action registers leaves them out, because the build plan
+# that lists the modules does not exist yet at analysis.
+def package_conf_fields(
+        *,
+        pkgname: str,
+        import_dirs: list[str],
+        toolchain_lib_ids: list[str],
+        project_deps: list[cmd_args],
+        library_fields: list[typing.Any],
+        link_infos: list[LinkInfo],
+        extra_libs: list[Artifact],
+        extra_lib_dyns: list[ResolvedDynamicValue]) -> cmd_args:
+    conf = cmd_args(
+        "name: " + pkgname,
+        "version: 1.0.0",
+        "id: " + pkgname,
+        "key: " + pkgname,
+        "exposed: False",
+        "import-dirs:" + ", ".join(import_dirs),
+    )
+
+    toolchain_deps_args = [cmd_args(id) for id in toolchain_lib_ids]
+    conf.add(cmd_args(cmd_args(toolchain_deps_args + project_deps, delimiter = ", "), format = "depends: {}"))
+    conf.add(library_fields)
+
+    extra_ld_opts = cmd_args(hidden = extra_libs)
+
+    # Extra flags that can be dynamically resolved. For example, -rpath /nix/store/...
+    for dyn in extra_lib_dyns:
+        fs = dyn.providers[ExtraGhcLinkerFlagsInfo].flags
+        extra_ld_opts.add(cmd_args(cmd_args(fs, delimiter = ","), format = "\"-Wl,{}\""))
+
+    append_pkg_conf_link_fields_for_link_infos(
+        pkgname = pkgname,
+        pkg_conf = conf,
+        link_infos = link_infos,
+        extra_ld_opts = extra_ld_opts,
+    )
+
+    return conf

@@ -16,6 +16,7 @@ load(
 )
 load(
     "@prelude//linking:link_info.bzl",
+    "LinkInfo",
     "LinkStyle",
     "MergedLinkInfo",
     "SharedLibLinkable",
@@ -46,8 +47,10 @@ load(
     "get_link_infos_from_extra_lib_info",
 )
 load(":oneshot_linkables.bzl", "OneshotLinkablesInfo")
+load(":pkg_conf.bzl", "package_conf_fields")
 load(
     ":toolchain.bzl",
+    "DynamicHaskellToolchainLibraryInfo",
     "DynamicHaskellToolchainPackageDbInfo",
     "HaskellToolchainInfo",
     "HaskellToolchainLibrary",
@@ -59,6 +62,7 @@ load(
     "attr_deps_haskell_lib_infos",
     "attr_deps_haskell_link_group_infos",
     "attr_deps_haskell_link_infos",
+    "attr_deps_haskell_link_infos_sans_template_deps",
     "attr_deps_haskell_toolchain_libraries",
     "check_is_worker_execute",
     "decompose_main",
@@ -490,10 +494,21 @@ def metadata_unit_args(
 
     return (ghc_args, buck2_args)
 
+# What the deps package conf of a library says besides its modules: the
+# libraries it depends on, whose deps dbs and confs the conf names, and the
+# native libraries it links. Only a one-shot library's metadata action
+# registers that package; see `target_metadata`.
+DepsPackageParams = record(
+    hlis = field(list[HaskellLibraryInfo]),
+    link_infos = field(list[LinkInfo]),
+    extra_libs = field(list[Artifact]),
+)
+
 MetadataParams = record(
     unit = field(MetadataUnitParams),
     direct_deps_link_info = field(list[HaskellLinkInfo]),
     haskell_direct_deps_lib_infos = field(list[HaskellLibraryInfo]),
+    deps_package = field(None | DepsPackageParams),
     md_gen = field(RunInfo),
     sources = field(list[Artifact]),
     strip_prefix = field(str),
@@ -510,8 +525,11 @@ def _dynamic_target_metadata_impl(
         actions: AnalysisActions,
         output: OutputArtifact,
         worker_files: dict[str, OutputArtifact],
+        deps_package: dict[str, OutputArtifact],
         arg: MetadataParams,
-        pkg_deps: None | ResolvedDynamicValue) -> list[Provider]:
+        pkg_deps: None | ResolvedDynamicValue,
+        toolchain_lib_dyn_infos: list[ResolvedDynamicValue],
+        extra_lib_dyns: list[ResolvedDynamicValue]) -> list[Provider]:
     munit = arg.unit
     unit = munit.unit
 
@@ -616,6 +634,24 @@ def _dynamic_target_metadata_impl(
         # We won't need to look at the ghc argsfile later, but the user might!
         md_args.add("--use-ghc-args-file-at", actions.declare_output("ghc-args").as_output())
 
+        if arg.deps_package != None:
+            # One import dir, `.`: with several, `ghc -M` tries to locate the
+            # interface file of every exposed module.
+            fields = package_conf_fields(
+                pkgname = unit.name,
+                import_dirs = ["."],
+                toolchain_lib_ids = [info.providers[DynamicHaskellToolchainLibraryInfo].id for info in toolchain_lib_dyn_infos],
+                project_deps = [cmd_args(lib.id, hidden = [lib.deps_db, lib.conf.deps_conf]) for lib in arg.deps_package.hlis],
+                library_fields = [],
+                link_infos = arg.deps_package.link_infos,
+                extra_libs = arg.deps_package.extra_libs,
+                extra_lib_dyns = extra_lib_dyns,
+            )
+            md_args.add("--ghc-pkg", haskell_toolchain.packager)
+            md_args.add("--package-conf-fields", actions.write("pkg-" + unit.artifact_suffix + "_deps.fields", fields, with_inputs = True))
+            md_args.add("--package-conf", deps_package["conf"])
+            md_args.add("--package-db", deps_package["db"])
+
         md_args_outer = cmd_args(arg.md_gen)
         md_args_outer.add(at_argfile(
             actions = actions,
@@ -638,9 +674,22 @@ _dynamic_target_metadata = dynamic_actions(
     attrs = {
         "output": dynattrs.output(),
         "worker_files": dynattrs.dict(str, dynattrs.output()),
+        "deps_package": dynattrs.dict(str, dynattrs.output()),
         "arg": dynattrs.value(MetadataParams),
         "pkg_deps": dynattrs.option(dynattrs.dynamic_value()),
+        "toolchain_lib_dyn_infos": dynattrs.list(dynattrs.dynamic_value()),
+        "extra_lib_dyns": dynattrs.list(dynattrs.dynamic_value()),
     },
+)
+
+# The build plan of a unit and, for a one-shot library, the package db its
+# dependents' `ghc -M` reads (`metadata_unit_args`), registered by the same
+# action from the plan's module list. A worker request registers nothing,
+# so a worker-mode library gets that db from `_make_package` instead.
+TargetMetadata = record(
+    plan = field(Artifact),
+    deps_db = field(Artifact | None),
+    deps_conf = field(Artifact | None),
 )
 
 def target_metadata(
@@ -652,7 +701,7 @@ def target_metadata(
         main: None | str,
         is_binary: bool,
         sources: list[Artifact],
-        worker: WorkerInfo | None) -> Artifact:
+        worker: WorkerInfo | None) -> TargetMetadata:
     prof_suffix = "-prof" if enable_profiling else ""
     link_suffix = "-" + link_style.value
     md_file = ctx.actions.declare_output(ctx.label.name + link_suffix + prof_suffix + ".md.json")
@@ -705,10 +754,38 @@ def target_metadata(
             "ghc_args": ctx.actions.declare_output(prefix + ".ghc.args"),
         }
 
+    # The deps package's conf names the dependencies' deps dbs and confs, and
+    # its link fields their native libraries; the dynamic values below carry
+    # the toolchain packages' ids and the linker flags those fields need.
+    deps_package = {}
+    deps_package_params = None
+    toolchain_lib_dyn_infos = []
+    extra_lib_dyns = []
+    if not is_binary and not is_worker_execute:
+        artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
+        deps_package = {
+            "conf": ctx.actions.declare_output("pkg-" + artifact_suffix + "_deps.conf"),
+            "db": ctx.actions.declare_output("db-" + artifact_suffix + "_deps", dir = True),
+        }
+        extra_lib_info = get_extra_lib_info(link_style, ctx.attrs.extra_libraries)
+        deps_package_params = DepsPackageParams(
+            hlis = [
+                (lib.prof_info if enable_profiling else lib.info)[link_style].value
+                for lib in attr_deps_haskell_link_infos_sans_template_deps(ctx)
+            ],
+            link_infos = get_link_infos_from_extra_lib_info(ctx.actions, ctx.label, linker_info, link_style, extra_lib_info),
+            extra_libs = extra_lib_info.extra_libs,
+        )
+        toolchain_lib_dyn_infos = [dep.dynamic for dep in attr_deps_haskell_toolchain_libraries(ctx)]
+        extra_lib_dyns = extra_lib_info.extra_lib_dyns
+
     ctx.actions.dynamic_output_new(_dynamic_target_metadata(
         pkg_deps = haskell_toolchain.packages.dynamic if haskell_toolchain.packages else None,
         output = md_file.as_output(),
         worker_files = {name: f.as_output() for name, f in worker_files.items()},
+        deps_package = {name: f.as_output() for name, f in deps_package.items()},
+        toolchain_lib_dyn_infos = toolchain_lib_dyn_infos,
+        extra_lib_dyns = extra_lib_dyns,
         arg = MetadataParams(
             unit = MetadataUnitParams(
                 unit = UnitParams(
@@ -730,6 +807,7 @@ def target_metadata(
             ),
             direct_deps_link_info = attr_deps_haskell_link_infos(ctx),
             haskell_direct_deps_lib_infos = haskell_direct_deps_lib_infos,
+            deps_package = deps_package_params,
             md_gen = md_gen,
             sources = sources,
             strip_prefix = str(ctx.label.path),
@@ -743,7 +821,11 @@ def target_metadata(
         ),
     ))
 
-    return md_file.with_associated_artifacts([src for src in sources if not src.is_source] + worker_files.values())
+    return TargetMetadata(
+        plan = md_file.with_associated_artifacts([src for src in sources if not src.is_source] + worker_files.values()),
+        deps_db = deps_package.get("db"),
+        deps_conf = deps_package.get("conf"),
+    )
 
 # List of a unit's modules for the persistent worker's metadata calculation.
 def target_skeleton(ctx: AnalysisContext, sources: list[Artifact]) -> Artifact:
