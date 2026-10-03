@@ -61,8 +61,21 @@ HaskellToolchainInfo = provider(
         # RTS options passed to GHC, changing the behavior of the compiler process, not the resulting binaries like
         # `-with-rtsopts` would.
         "ghc_rts_flags": provider_field(typing.Any, default = None),
+        # Remote execution properties by action class, merged over the
+        # execution platform's for each action of that class: "small" for
+        # package registration and metadata, "compile" for module compiles.
+        # A buck2 without `ctx.actions.run(remote_execution_properties)`
+        # rejects the argument, so an unset table passes nothing.
+        "action_classes": provider_field(dict[str, dict[str, str]] | None, default = None),
     },
 )
+
+def remote_execution_class(haskell_toolchain, action_class: str) -> dict[str, typing.Any]:
+    classes = haskell_toolchain.action_classes or {}
+    properties = classes.get(action_class)
+    if not properties:
+        return {}
+    return {"remote_execution_properties": properties}
 
 HaskellToolchainLibrary = provider(
     fields = {
