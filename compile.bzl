@@ -52,6 +52,7 @@ load(
     "HaskellToolchainInfo",
     "HaskellToolchainLibrary",
     "HaskellToolchainPackageDbTSet",
+    "remote_execution_class",
 )
 load(
     ":util.bzl",
@@ -594,6 +595,7 @@ def _dynamic_target_metadata_impl(
             identifier = arg.suffix if arg.suffix else None,
             exe = worker_exe(arg.worker, haskell_toolchain),
             allow_cache_upload = arg.allow_cache_upload,
+            **remote_execution_class(haskell_toolchain, "small")
         )
     else:
         md_args = cmd_args()
@@ -629,6 +631,7 @@ def _dynamic_target_metadata_impl(
             category = "haskell_metadata",
             identifier = arg.suffix if arg.suffix else None,
             allow_cache_upload = arg.allow_cache_upload,
+            **remote_execution_class(haskell_toolchain, "small")
         )
 
     return []
@@ -1648,7 +1651,7 @@ def _compile_module(
         dep_files = dep_files,
         allow_cache_upload = allow_cache_upload,
         allow_dep_file_cache_upload = allow_cache_upload,
-        **worker_args
+        **(worker_args | remote_execution_class(haskell_toolchain, "compile"))
     )
 
     module_tset = actions.tset(

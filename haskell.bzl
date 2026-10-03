@@ -103,6 +103,7 @@ load(
     "HaskellToolchainInfo",
     "HaskellToolchainLibrary",
     "HaskellToolchainPackageDbTSet",
+    "remote_execution_class",
 )
 load(
     ":util.bzl",
@@ -166,6 +167,7 @@ def _toolchain_target_metadata_impl(
         category = "haskell_toolchain_library_metadata",
         identifier = libname,
         allow_cache_upload = True,
+        **remote_execution_class(haskell_toolchain, "small")
     )
 
     return []
@@ -347,7 +349,8 @@ def _register_package_conf(
         category_prefix: str,
         artifact_suffix: str,
         use_empty_lib: bool,
-        allow_cache_upload: bool) -> None:
+        allow_cache_upload: bool,
+        remote_execution: dict[str, typing.Any] = {}) -> None:
     register_cmd = cmd_args(registerer)
     register_cmd.add("--ghc-pkg", packager)
     register_cmd.add("--output", db)
@@ -359,6 +362,7 @@ def _register_package_conf(
         identifier = "empty" if use_empty_lib else "final",
         # explicit turn this on for local_only actions to upload their results.
         allow_cache_upload = allow_cache_upload,
+        **remote_execution
     )
 
 def _mk_artifact_dir(dir_prefix: str, profiled: bool, link_style, subdir: str = "") -> str:
@@ -494,6 +498,7 @@ def _write_package_conf_impl(
         arg.artifact_suffix,
         arg.use_empty_lib,
         arg.allow_cache_upload,
+        remote_execution_class(arg.haskell_toolchain, "small"),
     )
 
     return []
@@ -1367,6 +1372,7 @@ def _make_link_package(
         artifact_suffix,
         False,
         ctx.attrs.allow_cache_upload,
+        remote_execution_class(haskell_toolchain, "small"),
     )
 
     return db
@@ -1871,6 +1877,7 @@ def _make_link_group_package(
         artifact_suffix,
         False,
         allow_cache_upload,
+        remote_execution_class(haskell_toolchain, "small"),
     )
 
 _DynamicLinkGroupSharedOptions = record(
