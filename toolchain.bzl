@@ -51,6 +51,13 @@ HaskellToolchainInfo = provider(
         "packages": provider_field(HaskellToolchainPackagesInfo | None, default = None),
         "use_persistent_workers": provider_field(bool, default = False),
         "use_worker": provider_field(bool, default = False),
+        # Whether `compiler` carries MercuryTechnologies/ghc 155b0ba4, whose
+        # make-mode-only resolver the oneshot plugin's linker resolver stands
+        # in for, and whose API that resolver calls. None leaves it to
+        # `[haskell] oneshot_linker`; a toolchain with more than one compiler
+        # behind a select says it per compiler, because a GHC without the patch
+        # cannot compile the resolver and its own oneshot resolver is intact.
+        "oneshot_linker": provider_field(bool | None, default = None),
         # The command an action runs where buck2 does not run its worker: a
         # remote executor, or a platform without persistent workers. Its command
         # line is the worker's request; it sends it to a server the execution

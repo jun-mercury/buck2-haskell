@@ -16,6 +16,7 @@ OneshotLinkablesInfo = provider(fields = {
 
 def _oneshot_linkables_impl(ctx: AnalysisContext) -> list[Provider]:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
+    linker = ctx.attrs.linker if haskell_toolchain.oneshot_linker == None else haskell_toolchain.oneshot_linker
     out = ctx.actions.declare_output("oneshot_linkables", dir = True)
     ctx.actions.run(
         cmd_args(
@@ -28,7 +29,7 @@ def _oneshot_linkables_impl(ctx: AnalysisContext) -> list[Provider]:
             ctx.attrs.src,
             "--out",
             out.as_output(),
-            cmd_args("--linker") if ctx.attrs.linker else cmd_args(),
+            cmd_args("--linker") if linker else cmd_args(),
         ),
         category = "haskell_oneshot_linkables",
     )
@@ -50,7 +51,8 @@ haskell_oneshot_linkables = rule(
     impl = _oneshot_linkables_impl,
     attrs = {
         # Compile the linker resolver as well as the interface loading. Only a
-        # GHC with MercuryTechnologies/ghc 155b0ba4 has the API it names.
+        # GHC with MercuryTechnologies/ghc 155b0ba4 has the API it names; the
+        # toolchain's `oneshot_linker`, when set, overrides this.
         "linker": attrs.bool(),
         "src": attrs.source(),
         # Load the import closure before a splice runs, for a `reifyInstances`
