@@ -54,6 +54,7 @@ module Buck2Haskell.OneshotLinkables (plugin) where
 
 import Control.Monad (forM_, when)
 import Control.Monad.IO.Class (liftIO)
+import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import GHC.Data.Maybe (MaybeErr (..))
 import GHC.Driver.DynFlags (DynFlags, ghcMode, isOneShot, xopt)
@@ -63,13 +64,14 @@ import GHC.Driver.Plugins (CommandLineOption, Plugin (..), defaultPlugin, purePl
 import GHC.Iface.Load (WhereFrom (ImportBySystem), loadInterface, loadSysInterface)
 import qualified GHC.LanguageExtensions as LangExt
 import GHC.Tc.Utils.Monad (IfG, initIfaceLoad)
-import GHC.Types.SrcLoc (unLoc)
+import GHC.Types.PkgQual (PkgQual)
+import GHC.Types.SrcLoc (Located, unLoc)
 import GHC.Unit.Finder (FindResult (Found), findImportedModule)
-import GHC.Unit.Module (Module, mkModule, moduleUnit)
+import GHC.Unit.Module (Module, ModuleName, mkModule, moduleUnit)
 import GHC.Unit.Module.Deps (Dependencies (..), Usage (..))
 import GHC.Unit.Module.ModSummary (ModSummary, ms_hspp_opts, ms_textual_imps)
-import GHC.Unit.Module.ModIface (mi_deps, mi_usages)
-import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..))
+import GHC.Unit.Module.ModIface (ModIface, mi_deps, mi_usages)
+import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..), ModuleNameWithIsBoot)
 import GHC.Utils.Outputable (text)
 
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER
@@ -144,7 +146,7 @@ loadInterfaces :: [CommandLineOption] -> ModSummary -> Hsc ()
 loadInterfaces opts summary = do
   hsc_env <- getHscEnv
   when (isOneShot (ghcMode (hsc_dflags hsc_env))) $ liftIO $ do
-    found <- traverse (\(qual, name) -> findImportedModule hsc_env (unLoc name) qual) (ms_textual_imps summary)
+    found <- traverse (\(qual, name) -> findImportedModule hsc_env (unLoc name) qual) (textualImports summary)
     let direct = [m | Found _ m <- found]
     initIfaceLoad hsc_env $ do
       loadFamInstModules direct
@@ -175,8 +177,32 @@ loadInterfaces opts summary = do
             Succeeded iface -> visit (Set.insert m seen) (imports iface ++ rest)
       where
         imports iface =
-          [mkModule (moduleUnit m) dep | (_, GWIB dep NotBoot) <- Set.toList (dep_direct_mods (mi_deps iface))]
-            ++ [usg_mod | UsagePackageModule {usg_mod} <- mi_usages iface]
+          [mkModule (moduleUnit m) dep | GWIB dep NotBoot <- directModules iface]
+            ++ [usg_mod | UsagePackageModule {usg_mod} <- usages iface]
+
+-- GHC 9.14 tags each import, and each direct dependency an interface
+-- records, with its Template Haskell level (explicit level imports,
+-- ghc-proposals 682), and keeps an interface's usages in a Maybe. Every level
+-- counts here, as every import did before levels existed.
+#if __GLASGOW_HASKELL__ >= 914
+textualImports :: ModSummary -> [(PkgQual, Located ModuleName)]
+textualImports summary = [(qual, name) | (_, qual, name) <- ms_textual_imps summary]
+
+directModules :: ModIface -> [ModuleNameWithIsBoot]
+directModules iface = [dep | (_, _, dep) <- Set.toList (dep_direct_mods (mi_deps iface))]
+
+usages :: ModIface -> [Usage]
+usages = fromMaybe [] . mi_usages
+#else
+textualImports :: ModSummary -> [(PkgQual, Located ModuleName)]
+textualImports = ms_textual_imps
+
+directModules :: ModIface -> [ModuleNameWithIsBoot]
+directModules iface = [dep | (_, dep) <- Set.toList (dep_direct_mods (mi_deps iface))]
+
+usages :: ModIface -> [Usage]
+usages = mi_usages
+#endif
 
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER
 data OneshotError
