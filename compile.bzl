@@ -136,6 +136,9 @@ CompileResultInfo = record(
     interfaces = field(list[Artifact]),
     extra_interfaces = field(list[Artifact]),
     hie = field(list[Artifact]),
+    # One directory per module, the -hpcdir of its compile, when the
+    # compile instruments for hpc; see `hpc_enabled`.
+    hpc_dirs = field(list[Artifact], []),
     stubs = field(Artifact),
     hashes = field(list[Artifact]),
     producing_indices = field(bool),
@@ -166,6 +169,7 @@ _Module = record(
     hie_files = field(list[Artifact]),
     stub_dir = field(Artifact | None),
     prefix_dir = field(str),
+    hpc_dir = field(Artifact | None, None),
 )
 
 def _get_module_outputs(
@@ -177,7 +181,8 @@ def _get_module_outputs(
     his = [outputs_dict[hi] for hi in module.interfaces]
     extra_his = [outputs_dict[hi] for hi in module.extra_interfaces]
     hies = [outputs_dict[hie] for hie in module.hie_files]
-    return objects + extra_objects + his + extra_his + hies
+    hpc = [outputs_dict[module.hpc_dir]] if module.hpc_dir != None else []
+    return objects + extra_objects + his + extra_his + hies + hpc
 
 _DynamicDoCompileOptions = record(
     artifact_suffix = str,
@@ -248,7 +253,8 @@ def _modules_by_name(
         suffix: str,
         module_prefix: str | None,
         is_haskell_binary: bool,
-        src_main: Artifact | None) -> dict[str, _Module]:
+        src_main: Artifact | None,
+        hpc: bool = False) -> dict[str, _Module]:
     modules = {}
     predefined_name_map = {}
 
@@ -335,6 +341,15 @@ def _modules_by_name(
 
         prefix_dir = "mod-" + suffix
 
+        # GHC writes a module's .mix under -hpcdir, as <unit-id>/<Module>.mix,
+        # or <Module>.mix for the main unit, and writes none for a boot file.
+        # A directory per module, because the unit id is known only to the
+        # compile, and the files are what `hpc` reads a tick file against.
+        if hpc and bootsuf == "":
+            hpc_dir = ctx.actions.declare_output("mod-" + suffix, "hpc-" + module_name, dir = True)
+        else:
+            hpc_dir = None
+
         modules[module_name] = _Module(
             name = module_name,
             source = src,
@@ -346,6 +361,7 @@ def _modules_by_name(
             hie_files = hie_files,
             stub_dir = stub_dir,
             prefix_dir = prefix_dir,
+            hpc_dir = hpc_dir,
         )
     return modules
 
@@ -1344,6 +1360,9 @@ def _compile_oneshot_args(
         stubs = outputs_dict[module.stub_dir]
         args.add("-stubdir", stubs)
 
+    if module.hpc_dir != None:
+        args.add("-hpcdir", outputs_dict[module.hpc_dir])
+
     is_dynamic_too_added = _add_dynamic_too_if_required(is_worker_execute, link_style, args)
     if is_dynamic_too_added:
         args.add("-dyno", extra_objects[0])
@@ -2301,6 +2320,12 @@ def _oneshot_preload_args(ctx: AnalysisContext) -> cmd_args | None:
     plugin = getattr(ctx.attrs, "_oneshot_linkables", None)
     return plugin[OneshotLinkablesInfo].preload_args if plugin else None
 
+def hpc_enabled(haskell_toolchain: HaskellToolchainInfo, compiler_flags: list[typing.Any]) -> bool:
+    """Whether a compile instruments for hpc: `-fhpc` among the toolchain's or
+    the target's compiler flags."""
+    flags = list(haskell_toolchain.compiler_flags or []) + list(compiler_flags)
+    return "-fhpc" in [f for f in flags if type(f) == type("")]
+
 def compile(
         ctx: AnalysisContext,
         link_style: LinkStyle,
@@ -2324,6 +2349,17 @@ def compile(
 
     is_worker_execute = check_is_worker_execute(worker, ctx.attrs.allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
 
+    # Only a oneshot compile can give each module its own -hpcdir: the make
+    # worker takes one set of flags for the whole unit, and so does a
+    # non-incremental compile. Refusing them beats a coverage report that
+    # silently lacks their modules.
+    hpc = hpc_enabled(haskell_toolchain, ctx.attrs.compiler_flags)
+    if hpc and (is_worker_execute or not incremental):
+        fail("{}: -fhpc needs oneshot compiles, and this target compiles {}".format(
+            ctx.label,
+            "through the make worker" if is_worker_execute else "non-incrementally",
+        ))
+
     modules = _modules_by_name(
         ctx,
         sources = ctx.attrs.srcs,
@@ -2334,6 +2370,7 @@ def compile(
         module_prefix = ctx.attrs.module_prefix,
         is_haskell_binary = is_haskell_binary,
         src_main = src_main,
+        hpc = hpc,
     )
 
     interfaces = [interface for module in modules.values() for interface in module.interfaces]
@@ -2341,6 +2378,7 @@ def compile(
     objects = [object for module in modules.values() for object in module.objects]
     extra_objects = [object for module in modules.values() for object in module.extra_objects]
     hie_files = [hie_file for module in modules.values() for hie_file in module.hie_files]
+    hpc_dirs = [module.hpc_dir for module in modules.values() if module.hpc_dir != None]
     stub_dirs = [
         module.stub_dir
         for module in modules.values()
@@ -2392,7 +2430,7 @@ def compile(
         pkg_deps = haskell_toolchain.packages.dynamic if haskell_toolchain.packages else None,
         outputs_dict = {
             o: o.as_output()
-            for o in interfaces + extra_interfaces + objects + extra_objects + hie_files + stub_dirs + abi_hashes
+            for o in interfaces + extra_interfaces + objects + extra_objects + hie_files + hpc_dirs + stub_dirs + abi_hashes
         },
         direct_deps_by_name = {
             info.value.name: (info.value.empty_db, info.value.dynamic[enable_profiling])
@@ -2478,6 +2516,7 @@ def compile(
         hashes = abi_hashes,
         stubs = stubs_dir,
         hie = hie_files,
+        hpc_dirs = hpc_dirs,
         producing_indices = False,
         module_tsets = dyn_module_tsets,
     )

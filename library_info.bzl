@@ -50,6 +50,9 @@ HaskellLibraryInfo = record(
     # HIE files indexed by profiling enabled/disabled
     hie_files = dict[bool, list[Artifact]],
     stub_dirs = list[Artifact],
+    # The -hpcdir of each module compile when the library instruments for
+    # hpc, empty otherwise; a binary collects them for `[hpc_mix]`.
+    hpc_dirs = field(list[Artifact], []),
     # extra non-Haskell libraries
     extra_libraries = field(ExtraLibraryInfo, ExtraLibraryInfo(as_deps = [], extra_libs = [], extra_lib_dyns = [])),
 

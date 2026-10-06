@@ -1029,6 +1029,7 @@ def _build_haskell_lib(
         objects = object_artifacts,
         hie_files = hie_artifacts,
         stub_dirs = stub_dirs,
+        hpc_dirs = compiled.hpc_dirs,
         extra_libraries = extra_lib_info,
         libs = all_libs,
         version = "1.0.0",
@@ -1771,6 +1772,19 @@ def _haskell_executable(ctx: AnalysisContext) -> HaskellExecutableOutput:
     sub_targets = {
         "metadata": [DefaultInfo(default_output = md_file)],
     }
+    if compiled.hpc_dirs:
+        # Every .mix of the binary's first-party modules, which `hpc` reads a
+        # tick file against, as one directory: a subdirectory per module
+        # compile, each laid out the way GHC writes -hpcdir. Present only when
+        # the compiles instrument for hpc, so nothing else changes.
+        hpc_dirs = list(compiled.hpc_dirs)
+        for lib in haskell_library_tset.traverse():
+            if lib != None:
+                hpc_dirs.extend(lib.hpc_dirs)
+        sub_targets["hpc_mix"] = [DefaultInfo(default_output = ctx.actions.copied_dir(
+            "__{}__hpc_mix".format(ctx.label.name),
+            {str(i): d for i, d in enumerate(hpc_dirs)},
+        ))]
     sub_targets.update(_haskell_module_sub_targets(
         compiled = compiled,
         link_style = link_style,
