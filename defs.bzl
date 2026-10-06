@@ -112,6 +112,18 @@ def _scripts_arg():
             default = "@buck2-haskell//tools:ghc_pkg_registerer",
         ),
         "_oneshot_linkables": _oneshot_linkables_attr(),
+        "oneshot_th_closure_exclude": attrs.list(attrs.string(), default = [], doc = """
+            Modules, by name, whose splices run without the oneshot linkables
+            plugin's walk of their transitive imports (the plugin's
+            `no-th-closure` option). The walk loads every module a splice
+            could reify instances from, as make mode would have in scope; a
+            listed module skips it. This is an allowlist: list a module only
+            after compiling it both ways and finding the same ABI hash and a
+            byte-identical object, because a splice such as
+            `discoverInstances` can find fewer instances, or the same ones in
+            another order, without the walk. A module without splices never
+            walks and gains nothing here.
+        """),
         "oneshot_preload_exclude": attrs.list(attrs.string(), default = [], doc = """
             Modules, by name, that a oneshot compile builds without the
             oneshot linkables preload (`-fplugin-library`). The preload is
