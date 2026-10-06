@@ -224,6 +224,9 @@ _DynamicDoCompileOptions = record(
     # as a package for a compile with splices, as a bare library for one without.
     oneshot_linkables = field(cmd_args | None, default = None),
     oneshot_preload = field(cmd_args | None, default = None),
+    # Modules compiled without `oneshot_preload`: see the
+    # `oneshot_preload_exclude` attribute.
+    oneshot_preload_exclude = field(list[str], default = []),
     # Toolchain library names required by plugins (from `plugins` attr) that
     # need to be added to the GHC command line. These are not necessarily the
     # same as the toolchain libraries required by the unit itself, since it's
@@ -1747,7 +1750,7 @@ def _compile_incr(
             module_plugin_flags = arg.srcs_plugin_flags.get(module.source),
             module_plugin_tool_paths = arg.srcs_plugin_tool_paths.get(module.source),
             oneshot_linkables = arg.oneshot_linkables,
-            oneshot_preload = arg.oneshot_preload,
+            oneshot_preload = None if module_name in arg.oneshot_preload_exclude else arg.oneshot_preload,
         )
 
 def compile_args_for_non_incr(
@@ -2258,6 +2261,7 @@ def compile(
             plugin_toolchain_deps = plugin_toolchain_deps,
             oneshot_linkables = _oneshot_linkables_args(ctx),
             oneshot_preload = _oneshot_preload_args(ctx),
+            oneshot_preload_exclude = getattr(ctx.attrs, "oneshot_preload_exclude", []),
         ),
     ))
 
