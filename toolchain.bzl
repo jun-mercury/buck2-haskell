@@ -75,7 +75,10 @@ HaskellToolchainInfo = provider(
         "ghc_rts_flags": provider_field(typing.Any, default = None),
         # Remote execution properties by action class, merged over the
         # execution platform's for each action of that class: "small" for
-        # package registration and metadata, "compile" for module compiles.
+        # package registration and metadata, "compile" for module compiles,
+        # "link_<style>" for a binary's link in that link style (shared,
+        # static or static_pic), falling back to "link". A static link takes
+        # every library archive, so it can need a size of its own.
         # A buck2 without `ctx.actions.run(remote_execution_properties)`
         # rejects the argument, so an unset table passes nothing.
         "action_classes": provider_field(dict[str, dict[str, str]] | None, default = None),
