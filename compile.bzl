@@ -885,7 +885,13 @@ def get_packages_info(
 
     packagedb_args.add(toolchain_package_db_tset.project_as_args("toolchain_package_db"))
 
-    local_package_flag = "-package-id" if is_worker_execute else "-package"
+    # A first-party library registers with its name as its unit id, so
+    # `-package-id` names it exactly where `-package` makes GHC match the name
+    # against every unit in the package dbs: a metadata step that exposes a
+    # closure of ten thousand libraries spent 79 s on that matching alone,
+    # and 22 s with ids, with identical output. A versioned name, as GHCi
+    # asks for, is not an id.
+    local_package_flag = "-package" if specify_pkg_version else "-package-id"
 
     # Expose only the packages we depend on directly
     for lib in haskell_direct_deps_lib_infos:
