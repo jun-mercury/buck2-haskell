@@ -1634,6 +1634,7 @@ def _dynamic_link_binary_impl(
         # explicit turn this on for local_only actions to upload their results.
         allow_cache_upload = arg.allow_cache_upload,
         weight = link_weight,
+        **(remote_execution_class(arg.haskell_toolchain, "link_" + arg.link_style.value) or remote_execution_class(arg.haskell_toolchain, "link"))
     )
 
     return []
