@@ -97,6 +97,18 @@ def _scripts_arg():
             default = "@buck2-haskell//tools:ghc_pkg_registerer",
         ),
         "_oneshot_linkables": _oneshot_linkables_attr(),
+        "oneshot_preload_exclude": attrs.list(attrs.string(), default = [], doc = """
+            Modules, by name, that a oneshot compile builds without the
+            oneshot linkables preload (`-fplugin-library`). The preload is
+            the splice-free path; for a module without splices it loads the
+            family-instance modules of every direct import's dependencies,
+            which the constraint solver needs only when the module itself
+            meets a type or data family. List a module here only if it
+            defines nothing and meets no family, such as a generated test
+            main (`main = hspec spec`); listing any other module can bring
+            back the type errors the plugin exists to prevent. A module
+            with splices loads the plugin as a package and is unaffected.
+        """),
         # Configuration scope is controlled by ghc-worker.per_configuration.
         # FIXME(DUX-5633): Retire workers when their configuration becomes
         # inactive or the build is under memory pressure, perhaps in buck-proxy.
