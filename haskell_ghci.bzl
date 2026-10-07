@@ -75,6 +75,7 @@ load(
     "HaskellPackageConfInfo",
     "HaskellSourceInfo",
     "HaskellSourcesTSet",
+    "transitive_toolchain_libraries",
 )
 load(
     ":link_info.bzl",
@@ -906,7 +907,7 @@ def haskell_ghci_impl(ctx: AnalysisContext) -> list[Provider]:
     link_group_libs = attr_deps_haskell_link_group_infos(ctx, link_style)
     all_link_group_ids = [l.id for lg in link_group_libs for l in lg.libraries]
 
-    transitive_toolchain_libs = packages_info.transitive_deps.reduce("toolchain_packages")
+    transitive_toolchain_libs = transitive_toolchain_libraries(packages_info.transitive_deps)
     toolchain_libs = [p.name for p in transitive_toolchain_libs]
     toolchain_pkg_args_file = ctx.actions.declare_output("toolchain_pkgdbs.args")
     if haskell_toolchain.packages:
@@ -1403,7 +1404,7 @@ def haskell_ghci_global_impl(ctx: AnalysisContext) -> list[Provider]:
     toolchain_packages = []
     prebuilt_db_set = {}
     if dep_lib_tset != None:
-        toolchain_packages = dep_lib_tset.reduce("toolchain_packages")
+        toolchain_packages = transitive_toolchain_libraries(dep_lib_tset)
 
         # Also collect any genuine prebuilt package dbs (is_prebuilt=True in HaskellLinkInfo).
         for lib in dep_lib_tset.traverse():
@@ -1470,8 +1471,8 @@ def haskell_ghci_global_impl(ctx: AnalysisContext) -> list[Provider]:
     # and doesn't guarantee materialization when its result is served from cache).
     toolchain_pkgdbs_forced = None
     if haskell_toolchain.packages:
-        # The "toolchain_packages" reduction tracks toolchain deps via
-        # lib.toolchain_dependencies on every first-party node.
+        # toolchain_packages comes from lib.toolchain_dependencies on every
+        # first-party node in the closure.
         all_toolchain_libs = [pkg.name for pkg in toolchain_packages] + list(extra_toolchain_lib_names.keys())
         ctx.actions.dynamic_output_new(_ghci_resolve_toolchain_pkgs(
             pkg_deps = haskell_toolchain.packages.dynamic,

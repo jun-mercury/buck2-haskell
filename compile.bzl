@@ -35,6 +35,7 @@ load(
     "HaskellLibraryInfoTSet",
     "HaskellLibraryProvider",
     "get_libname",
+    "transitive_toolchain_libraries",
 )
 load(
     ":link_info.bzl",
@@ -912,7 +913,7 @@ def get_packages_info(
         if HaskellToolchainLibrary in dep
     ]
 
-    transitive_toolchain_libs = libs.reduce("toolchain_packages")
+    transitive_toolchain_libs = transitive_toolchain_libraries(libs)
     toolchain_package_db = augment_toolchain_package_db(
         actions,
         toolchain_package_db,
@@ -1267,7 +1268,7 @@ def _common_compile_module_args(
         for dep in arg.deps
         if HaskellToolchainLibrary in dep
     ]
-    transitive_toolchain_libs = libs.reduce("toolchain_packages")
+    transitive_toolchain_libs = transitive_toolchain_libraries(libs)
     toolchain_package_db = augment_toolchain_package_db(
         actions,
         toolchain_package_db,

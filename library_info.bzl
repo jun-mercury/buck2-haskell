@@ -9,7 +9,6 @@ load(
     "@prelude//linking:link_info.bzl",
     "LinkStyle",
 )
-load("@prelude//utils:utils.bzl", "dedupe_by_value", "flatten")
 load(
     ":toolchain.bzl",
     "HaskellToolchainLibrary",
@@ -98,14 +97,6 @@ def _project_as_interfaces(lib: HaskellLibraryInfo) -> cmd_args:
         args.add(ifaces)
     return args
 
-def _get_toolchain_packages(
-        children: list[list[HaskellToolchainLibrary]],
-        lib: HaskellLibraryInfo | None) -> list[HaskellToolchainLibrary]:
-    flatted = flatten(children)
-    if lib:
-        flatted.extend(lib.toolchain_dependencies)
-    return dedupe_by_value(flatted)
-
 def _json_as_dep_units(lib: HaskellLibraryInfo) -> struct:
     return struct(
         name = lib.name,
@@ -139,13 +130,22 @@ HaskellLibraryInfoTSet = transitive_set(
         "build_plans": _project_as_build_plans,
         "package_confs": _project_as_package_confs,
     },
-    reductions = {
-        "toolchain_packages": _get_toolchain_packages,
-    },
     json_projections = {
         "dep_units": _json_as_dep_units,
     },
 )
+
+# The toolchain libraries used by any library in `libs`, deduplicated.
+#
+# This deliberately traverses instead of using a tset reduction: reductions are
+# computed and retained at every node, which costs memory proportional to
+# nodes x closure size. Post-order traversal yields the same order a
+# "children first, then own deps" reduction would.
+def transitive_toolchain_libraries(libs: HaskellLibraryInfoTSet) -> list[HaskellToolchainLibrary]:
+    seen = set()
+    for lib in libs.traverse(ordering = "postorder"):
+        seen.update(lib.toolchain_dependencies)
+    return list(seen)
 
 # Transitive set carrying (module_path, source_artifact) pairs from haskell_library targets.
 # Each node's value is a list of (str, Artifact) where str is the path relative to the
