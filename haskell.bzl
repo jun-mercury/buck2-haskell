@@ -1545,7 +1545,7 @@ _dynamic_link_binary = dynamic_actions(
 
 HaskellExecutableOutput = record(
     binary = Artifact,
-    sub_targets = dict[str, list[DefaultInfo]],
+    sub_targets = dict[str, list[Provider]],
     run = ArgLike,
     runtime_files = field(list[ArgLike], []),
     index_info = field(HaskellIndexInfo | None),
