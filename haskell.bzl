@@ -337,7 +337,6 @@ def haskell_prebuilt_library_impl(ctx: AnalysisContext) -> list[Provider]:
             conf = HaskellPackageConfInfo(final_conf = None, empty_conf = None, deps_conf = None),
             interfaces = {},
             objects = {},
-            dependencies = [],
             toolchain_dependencies = [],
             hie_files = {},
             stub_dirs = [],
@@ -357,7 +356,6 @@ def haskell_prebuilt_library_impl(ctx: AnalysisContext) -> list[Provider]:
             conf = HaskellPackageConfInfo(final_conf = None, empty_conf = None, deps_conf = None),
             interfaces = {},
             objects = {},
-            dependencies = [],
             toolchain_dependencies = [],
             hie_files = {},
             stub_dirs = [],
@@ -705,7 +703,6 @@ _DynamicLinkSharedOptions = record(
     objects = list[Artifact],
     link_group_libs = list[HaskellLinkGroupInfo],
     toolchain_libs = list[str],
-    project_libs = list[str],
     toolchain_libs_full = list[HaskellToolchainLibrary],
     project_libs_full = list[HaskellLibraryInfo],
     worker_target_id = str,
@@ -729,11 +726,12 @@ def _dynamic_link_shared_impl(
     toolchain_package_db = pkg_deps.providers[DynamicHaskellToolchainPackageDbInfo].toolchain_packages
 
     libs = actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info)
-    all_deps = libs.reduce("packages")
+    transitive_toolchain_libs = libs.reduce("toolchain_packages")
+    all_deps = [p.name for p in transitive_toolchain_libs]
     toolchain_package_db = augment_toolchain_package_db(
         actions,
         toolchain_package_db,
-        arg.toolchain_libs_full + libs.reduce("toolchain_packages"),
+        arg.toolchain_libs_full + transitive_toolchain_libs,
     )
     toolchain_package_db_tset = actions.tset(
         HaskellToolchainPackageDbTSet,
@@ -906,7 +904,6 @@ def _build_haskell_lib(
     uniq_infos = [x[link_style].value for x in linfos]
 
     toolchain_libs = [dep.name for dep in attr_deps_haskell_toolchain_libraries(ctx)]
-    project_libs = [dep.name for dep in attr_deps_haskell_lib_infos(ctx, link_style, enable_profiling)]
     toolchain_libs_full = attr_deps_haskell_toolchain_libraries(ctx)
     project_libs_full = attr_deps_haskell_lib_infos(ctx, link_style, enable_profiling)
 
@@ -975,7 +972,6 @@ def _build_haskell_lib(
                 objects = objects,
                 link_group_libs = link_group_libs,
                 toolchain_libs = toolchain_libs,
-                project_libs = project_libs,
                 toolchain_libs_full = toolchain_libs_full,
                 project_libs_full = project_libs_full,
                 worker_target_id = pkgname,
@@ -1128,7 +1124,6 @@ def _build_haskell_lib(
         version = "1.0.0",
         is_prebuilt = False,
         profiling_enabled = enable_profiling,
-        dependencies = toolchain_libs + project_libs,
         toolchain_dependencies = toolchain_libs_full,
         md_file = md_file,
         skeleton = skeleton,
@@ -1522,16 +1517,18 @@ def _dynamic_link_binary_impl(
 
     all_toolchain_libs0 = []
     all_toolchain_libs0.extend(arg.toolchain_libs)
-    all_toolchain_libs0.extend([p.name for p in arg.haskell_library_tset.reduce("toolchain_packages")])
-    all_toolchain_libs0.extend([p.name for p in link_group_tset.reduce("toolchain_packages")])
+    lib_toolchain_libs = arg.haskell_library_tset.reduce("toolchain_packages")
+    link_group_toolchain_libs = link_group_tset.reduce("toolchain_packages")
+    all_toolchain_libs0.extend([p.name for p in lib_toolchain_libs])
+    all_toolchain_libs0.extend([p.name for p in link_group_toolchain_libs])
     all_toolchain_libs = dedupe_by_value(all_toolchain_libs0)
 
     toolchain_package_db = augment_toolchain_package_db(
         actions,
         toolchain_package_db,
         [dep[HaskellToolchainLibrary] for dep in arg.deps if HaskellToolchainLibrary in dep] +
-        arg.haskell_library_tset.reduce("toolchain_packages") +
-        link_group_tset.reduce("toolchain_packages"),
+        lib_toolchain_libs +
+        link_group_toolchain_libs,
     )
     toolchain_package_db_tset = actions.tset(
         HaskellToolchainPackageDbTSet,
@@ -2257,8 +2254,7 @@ def make_haskell_link_group(
             toolchain_deps_name = [d.name for d in toolchain_deps]
             toolchain_lib_dyn_infos = [dep.dynamic for dep in toolchain_deps]
 
-            all_deps = libs_tset.reduce("packages")
-            project_deps = [d for d in all_deps if d not in toolchain_deps_name]
+            project_deps = [lib.name for lib in libs_tset.traverse() if lib.name not in toolchain_deps_name]
 
             pkg_deps = haskell_toolchain.packages.dynamic if haskell_toolchain.packages else None
 

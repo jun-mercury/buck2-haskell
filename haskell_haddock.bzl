@@ -252,7 +252,8 @@ def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, compiled: CompileRes
         for dep in attr_deps(ctx)
         if HaskellToolchainLibrary in dep
     ]
-    toolchain_libs = direct_toolchain_libs + libs.reduce("packages")
+    transitive_toolchain_libs = libs.reduce("toolchain_packages")
+    toolchain_libs = direct_toolchain_libs + [p.name for p in transitive_toolchain_libs]
 
     ctx.actions.dynamic_output_new(_dynamic_haddock_dump_interfaces(
         md_file = md_file,
@@ -275,7 +276,7 @@ def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, compiled: CompileRes
             toolchain_libs = toolchain_libs,
             toolchain_lib_objs =
                 [dep[HaskellToolchainLibrary] for dep in attr_deps(ctx) if HaskellToolchainLibrary in dep] +
-                libs.reduce("toolchain_packages"),
+                transitive_toolchain_libs,
         ),
     ))
 

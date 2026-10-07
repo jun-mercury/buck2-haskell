@@ -904,14 +904,15 @@ def get_packages_info(
         if HaskellToolchainLibrary in dep
     ]
 
+    transitive_toolchain_libs = libs.reduce("toolchain_packages")
     toolchain_package_db = augment_toolchain_package_db(
         actions,
         toolchain_package_db,
         [dep[HaskellToolchainLibrary] for dep in deps if HaskellToolchainLibrary in dep] +
-        libs.reduce("toolchain_packages"),
+        transitive_toolchain_libs,
     )
 
-    toolchain_libs = direct_toolchain_libs + libs.reduce("packages")
+    toolchain_libs = direct_toolchain_libs + [p.name for p in transitive_toolchain_libs]
 
     toolchain_package_db_tset = actions.tset(
         HaskellToolchainPackageDbTSet,
@@ -1258,13 +1259,14 @@ def _common_compile_module_args(
         for dep in arg.deps
         if HaskellToolchainLibrary in dep
     ]
+    transitive_toolchain_libs = libs.reduce("toolchain_packages")
     toolchain_package_db = augment_toolchain_package_db(
         actions,
         toolchain_package_db,
         [dep[HaskellToolchainLibrary] for dep in arg.deps if HaskellToolchainLibrary in dep] +
-        libs.reduce("toolchain_packages"),
+        transitive_toolchain_libs,
     )
-    toolchain_libs = direct_toolchain_libs + libs.reduce("packages") + arg.plugin_toolchain_deps
+    toolchain_libs = direct_toolchain_libs + [p.name for p in transitive_toolchain_libs] + arg.plugin_toolchain_deps
 
     toolchain_package_db_tset = actions.tset(
         HaskellToolchainPackageDbTSet,

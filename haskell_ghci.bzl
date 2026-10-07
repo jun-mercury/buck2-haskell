@@ -906,7 +906,8 @@ def haskell_ghci_impl(ctx: AnalysisContext) -> list[Provider]:
     link_group_libs = attr_deps_haskell_link_group_infos(ctx, link_style)
     all_link_group_ids = [l.id for lg in link_group_libs for l in lg.libraries]
 
-    toolchain_libs = packages_info.transitive_deps.reduce("packages")
+    transitive_toolchain_libs = packages_info.transitive_deps.reduce("toolchain_packages")
+    toolchain_libs = [p.name for p in transitive_toolchain_libs]
     toolchain_pkg_args_file = ctx.actions.declare_output("toolchain_pkgdbs.args")
     if haskell_toolchain.packages:
         ctx.actions.dynamic_output_new(_ghci_resolve_toolchain_pkgs(
@@ -914,13 +915,13 @@ def haskell_ghci_impl(ctx: AnalysisContext) -> list[Provider]:
             output = toolchain_pkg_args_file.as_output(),
             arg = struct(
                 toolchain_libs = toolchain_libs,
-                toolchain_lib_objs = packages_info.transitive_deps.reduce("toolchain_packages"),
+                toolchain_lib_objs = transitive_toolchain_libs,
             ),
         ))
     else:
         ctx.actions.write(toolchain_pkg_args_file.as_output(), "")
 
-    for lib in packages_info.transitive_deps.reduce("toolchain_packages"):
+    for lib in transitive_toolchain_libs:
         packages_info.exposed_package_args.add("-package", lib.name)
 
     # Collect source file artifacts from non-Haskell deps (e.g. export_file
@@ -1013,7 +1014,7 @@ def haskell_ghci_impl(ctx: AnalysisContext) -> list[Provider]:
             for dep in attr_deps(ctx)
             if HaskellToolchainLibrary in dep
         ]
-        transitive_dep_packages = packages_info.transitive_deps.reduce("packages")
+        transitive_dep_packages = [p.name for p in transitive_toolchain_libs]
 
         if haskell_toolchain.packages:
             ctx.actions.dynamic_output_new(_ghci_link_src_lib(
@@ -1269,7 +1270,6 @@ def haskell_ghci_impl(ctx: AnalysisContext) -> list[Provider]:
             version = "1.0.0",
             is_prebuilt = False,
             profiling_enabled = False,
-            dependencies = [],
             toolchain_dependencies = [],
             md_file = None,
         )
@@ -1398,13 +1398,11 @@ def haskell_ghci_global_impl(ctx: AnalysisContext) -> list[Provider]:
 
     # Get transitive toolchain package info from dep's HaskellLibraryInfoTSet.
     # Toolchain packages (aeson, QuickCheck, etc.) are haskell_toolchain_library targets;
-    # they don't appear in HaskellLinkInfo but are tracked in lib.dependencies and
+    # they don't appear in HaskellLinkInfo but are tracked in
     # lib.toolchain_dependencies on each HaskellLibraryInfo node.
-    toolchain_libs = []
     toolchain_packages = []
     prebuilt_db_set = {}
     if dep_lib_tset != None:
-        toolchain_libs = dep_lib_tset.reduce("packages")
         toolchain_packages = dep_lib_tset.reduce("toolchain_packages")
 
         # Also collect any genuine prebuilt package dbs (is_prebuilt=True in HaskellLinkInfo).
@@ -1472,13 +1470,8 @@ def haskell_ghci_global_impl(ctx: AnalysisContext) -> list[Provider]:
     # and doesn't guarantee materialization when its result is served from cache).
     toolchain_pkgdbs_forced = None
     if haskell_toolchain.packages:
-        # Use the "toolchain_packages" reduction (HaskellToolchainLibrary objects) as
-        # the authoritative source for all_toolchain_libs.  The "packages" string
-        # reduction is a superset that also includes first-party names, which are
-        # silently skipped by the dynamic action, but empirically it can miss some
-        # toolchain packages (e.g. leaf packages with no nix reverse-dependencies).
-        # The "toolchain_packages" reduction directly tracks toolchain deps via
-        # lib.toolchain_dependencies on every first-party node, so it is more reliable.
+        # The "toolchain_packages" reduction tracks toolchain deps via
+        # lib.toolchain_dependencies on every first-party node.
         all_toolchain_libs = [pkg.name for pkg in toolchain_packages] + list(extra_toolchain_lib_names.keys())
         ctx.actions.dynamic_output_new(_ghci_resolve_toolchain_pkgs(
             pkg_deps = haskell_toolchain.packages.dynamic,
