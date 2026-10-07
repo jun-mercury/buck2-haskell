@@ -143,6 +143,9 @@ CompileResultInfo = record(
     hashes = field(list[Artifact]),
     producing_indices = field(bool),
     module_tsets = field(DynamicValue),
+    # A binary compiled through the make worker: the worker request that runs
+    # its `Main` from bytecode instead of compiling it (see `_eval_main_args`).
+    eval_args = field(Artifact | None, None),
 )
 
 PackagesInfo = record(
@@ -185,6 +188,7 @@ def _get_module_outputs(
     return objects + extra_objects + his + extra_his + hies + hpc
 
 _DynamicDoCompileOptions = record(
+    eval_args = field(Artifact | None, None),
     artifact_suffix = str,
     compiler_flags = list[typing.Any],  # Arguments.
     ghc_rts_flags = list[typing.Any],  # Arguments.
@@ -1500,7 +1504,8 @@ def _compile_module(
         module_plugin_flags: cmd_args | None = None,
         module_plugin_tool_paths: typing.Any = None,
         oneshot_linkables: cmd_args | None = None,
-        oneshot_preload: cmd_args | None = None) -> CompiledModuleTSet:
+        oneshot_preload: cmd_args | None = None,
+        eval_args: OutputArtifact | None = None) -> CompiledModuleTSet:
     is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
 
     abi_tag = actions.artifact_tag()
@@ -1675,6 +1680,22 @@ def _compile_module(
         compile_cmd_args.add(wrapper_args_for_file)
         compile_cmd_args.add(compile_args_for_file)
 
+    if eval_args != None:
+        _eval_main_args(
+            actions,
+            eval_args = eval_args,
+            common_args = common_args,
+            module_name = module_name,
+            module = module,
+            md_file = md_file,
+            compile_args_for_file = compile_args_for_file,
+            inputs = [
+                dependency_modules.project_as_args("interfaces"),
+                common_args.extra_libs,
+                link_args,
+            ] + hidden_toolchain_deps,
+        )
+
     worker_args = {}
     if is_worker_execute:
         worker_args["exe"] = worker_exe(worker, haskell_toolchain)
@@ -1712,6 +1733,45 @@ def _compile_module(
     )
 
     return module_tset
+
+# The worker request that runs a binary's `Main` from bytecode, one argument per
+# line, for the worker client to send. It is the make-mode compile request for
+# the module minus everything that writes: `--eval-main` makes the server
+# restore `Main` from the interface this module's compile wrote, as it restores
+# any dependency, and evaluate `main`, so the request names no outputs and a
+# test action can send it from inside an execution root it does not own. The
+# inputs are those of the compile, plus the compile's own interfaces, written
+# with the file so that whatever runs it receives them.
+def _eval_main_args(
+        actions: AnalysisActions,
+        *,
+        eval_args: OutputArtifact,
+        common_args: CommonCompileModuleArgs,
+        module_name: str,
+        module: _Module,
+        md_file: Artifact,
+        compile_args_for_file: cmd_args,
+        inputs: list[typing.Any]) -> None:
+    request = cmd_args(
+        common_args.command,
+        "--unit",
+        common_args.pkgname,
+        "--module",
+        module_name,
+        "--home-unit",
+        md_file,
+        "--interp",
+        "--eval-main",
+        "-c",
+        compile_args_for_file,
+        hidden = [
+            common_args.common_args_file,
+            common_args.unit_inputs,
+            module.source,
+            module.interfaces,
+        ] + inputs,
+    )
+    actions.write(eval_args, request, allow_args = True, with_inputs = True)
 
 def _get_module_from_map(mapped_modules: dict[str, _Module], module_name: str) -> _Module:
     module = mapped_modules.get(module_name)
@@ -1965,6 +2025,7 @@ def _compile_incr(
             module_plugin_tool_paths = arg.srcs_plugin_tool_paths.get(module.source),
             oneshot_linkables = cmd_args(arg.oneshot_linkables, "-fplugin-opt=Buck2Haskell.OneshotLinkables:no-th-closure") if arg.oneshot_linkables != None and module_name in arg.oneshot_th_closure_exclude else arg.oneshot_linkables,
             oneshot_preload = None if module_name in arg.oneshot_preload_exclude else arg.oneshot_preload,
+            eval_args = outputs.outputs[arg.eval_args] if arg.eval_args != None and module_name == "Main" else None,
         )
 
 def compile_args_for_non_incr(
@@ -2299,6 +2360,11 @@ def _dynamic_do_compile_impl(
             direct_deps_by_name,
             outputs,
         )
+
+        # A binary whose main module is not called `Main` has nothing to
+        # evaluate; its request is empty, which the worker refuses.
+        if arg.eval_args != None and "Main" not in module_tsets.modules:
+            actions.write(outputs.outputs[arg.eval_args], "")
     else:
         _compile_non_incr(
             actions,
@@ -2443,19 +2509,25 @@ def compile(
 
     is_worker_execute = check_is_worker_execute(worker, ctx.attrs.allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
 
+    # Only an incremental make-worker compile has a request to evaluate from.
+    eval_args = None
+    if is_haskell_binary and is_worker_execute and incremental:
+        eval_args = ctx.actions.declare_output("eval-{}.args".format(artifact_suffix))
+
     dyn_module_tsets = ctx.actions.dynamic_output_new(_dynamic_do_compile(
         incremental = incremental,
         md_file = md_file,
         pkg_deps = haskell_toolchain.packages.dynamic if haskell_toolchain.packages else None,
         outputs_dict = {
             o: o.as_output()
-            for o in interfaces + extra_interfaces + objects + extra_objects + hie_files + hpc_dirs + stub_dirs + abi_hashes
+            for o in interfaces + extra_interfaces + objects + extra_objects + hie_files + hpc_dirs + stub_dirs + abi_hashes + ([eval_args] if eval_args else [])
         },
         direct_deps_by_name = {
             info.value.name: (info.value.empty_db, info.value.dynamic[enable_profiling])
             for info in direct_deps_info
         },
         arg = _DynamicDoCompileOptions(
+            eval_args = eval_args,
             artifact_suffix = artifact_suffix,
             compiler_flags = ctx.attrs.compiler_flags,
             ghc_rts_flags = ctx.attrs.ghc_rts_flags,
@@ -2539,4 +2611,5 @@ def compile(
         hpc_dirs = hpc_dirs,
         producing_indices = False,
         module_tsets = dyn_module_tsets,
+        eval_args = eval_args,
     )

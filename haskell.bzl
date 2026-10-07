@@ -1551,6 +1551,36 @@ HaskellExecutableOutput = record(
     index_info = field(HaskellIndexInfo | None),
 )
 
+# `eval.sh <request file> <worker client...> [-- <program args>]`: sends the
+# request the file holds, one argument per line, through the client. The
+# program's output reaches the server's files rather than this process, so
+# the script passes them on and exits with the program's code.
+_EVAL_RUNNER = """\
+#!/usr/bin/env bash
+set -uo pipefail
+request_file=$1
+shift
+client=()
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+  client+=("$1")
+  shift
+done
+[ $# -gt 0 ] && shift
+mapfile -t request < "$request_file"
+program_args=()
+for a in "$@"; do
+  program_args+=(--eval-arg "$a")
+done
+out=$(mktemp "${TMPDIR:-/tmp}/eval-stdout.XXXXXX")
+err=$(mktemp "${TMPDIR:-/tmp}/eval-stderr.XXXXXX")
+"${client[@]}" "${request[@]}" "${program_args[@]}" --eval-stdout "$out" --eval-stderr "$err"
+code=$?
+cat "$out"
+cat "$err" >&2
+rm -f "$out" "$err"
+exit "$code"
+"""
+
 def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     exe = _haskell_executable(ctx)
 
@@ -1785,6 +1815,24 @@ def _haskell_executable(ctx: AnalysisContext) -> HaskellExecutableOutput:
             "__{}__hpc_mix".format(ctx.label.name),
             {str(i): d for i, d in enumerate(hpc_dirs)},
         ))]
+    if compiled.eval_args != None and haskell_toolchain.worker_client != None:
+        # Runs the binary's `Main` in a persistent worker from bytecode, with
+        # nothing linked: what `buck2 run` or a test does with `[eval]` instead
+        # of the binary. See `_eval_main_args` in compile.bzl.
+        runner = ctx.actions.write(
+            "__{}__eval.sh".format(ctx.label.name),
+            _EVAL_RUNNER,
+            is_executable = True,
+        )
+        sub_targets["eval"] = [
+            DefaultInfo(default_output = compiled.eval_args),
+            RunInfo(args = cmd_args(
+                runner,
+                compiled.eval_args,
+                haskell_toolchain.worker_client,
+                hidden = resources_hidden,
+            )),
+        ]
     sub_targets.update(_haskell_module_sub_targets(
         compiled = compiled,
         link_style = link_style,
