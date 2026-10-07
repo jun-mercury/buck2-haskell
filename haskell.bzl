@@ -79,6 +79,7 @@ load(
     "HaskellSourceInfo",
     "HaskellSourcesTSet",
     "get_libname",
+    "transitive_toolchain_libraries",
 )
 load(
     ":link_info.bzl",
@@ -726,7 +727,7 @@ def _dynamic_link_shared_impl(
     toolchain_package_db = pkg_deps.providers[DynamicHaskellToolchainPackageDbInfo].toolchain_packages
 
     libs = actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info)
-    transitive_toolchain_libs = libs.reduce("toolchain_packages")
+    transitive_toolchain_libs = transitive_toolchain_libraries(libs)
     all_deps = [p.name for p in transitive_toolchain_libs]
     toolchain_package_db = augment_toolchain_package_db(
         actions,
@@ -1517,7 +1518,7 @@ def _dynamic_link_binary_impl(
 
     all_toolchain_libs0 = []
     all_toolchain_libs0.extend(arg.toolchain_libs)
-    lib_toolchain_libs = arg.haskell_library_tset.reduce("toolchain_packages")
+    lib_toolchain_libs = transitive_toolchain_libraries(arg.haskell_library_tset)
     link_group_toolchain_libs = link_group_tset.reduce("toolchain_packages")
     all_toolchain_libs0.extend([p.name for p in lib_toolchain_libs])
     all_toolchain_libs0.extend([p.name for p in link_group_toolchain_libs])
@@ -2250,7 +2251,7 @@ def make_haskell_link_group(
                 children = direct_deps_lg_tsets,
             )
 
-            toolchain_deps = libs_tset.reduce("toolchain_packages")
+            toolchain_deps = transitive_toolchain_libraries(libs_tset)
             toolchain_deps_name = [d.name for d in toolchain_deps]
             toolchain_lib_dyn_infos = [dep.dynamic for dep in toolchain_deps]
 

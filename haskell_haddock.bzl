@@ -8,7 +8,7 @@
 load("@prelude//utils:graph_utils.bzl", "post_order_traversal")
 load("@prelude//:paths.bzl", "paths")
 load(":compile.bzl", "CompileResultInfo", "CompiledModuleTSet", "DynamicCompileResultInfo")
-load(":library_info.bzl", "HaskellLibraryInfoTSet")
+load(":library_info.bzl", "HaskellLibraryInfoTSet", "transitive_toolchain_libraries")
 load(":link_info.bzl", "cxx_toolchain_link_style")
 load(
     ":toolchain.bzl",
@@ -252,7 +252,7 @@ def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, compiled: CompileRes
         for dep in attr_deps(ctx)
         if HaskellToolchainLibrary in dep
     ]
-    transitive_toolchain_libs = libs.reduce("toolchain_packages")
+    transitive_toolchain_libs = transitive_toolchain_libraries(libs)
     toolchain_libs = direct_toolchain_libs + [p.name for p in transitive_toolchain_libs]
 
     ctx.actions.dynamic_output_new(_dynamic_haddock_dump_interfaces(
