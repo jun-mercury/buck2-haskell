@@ -2287,7 +2287,11 @@ def _dynamic_do_compile_impl(
         arg: _DynamicDoCompileOptions,
         pkg_deps: ResolvedDynamicValue | None,
         outputs_dict: dict[Artifact, OutputArtifact],
-        direct_deps_by_name: dict[str, _DirectDep]) -> list[Provider]:
+        direct_dep_dynamics: list[ResolvedDynamicValue]) -> list[Provider]:
+    direct_deps_by_name = {
+        info.value.name: (info.value.empty_db, dynamic)
+        for info, dynamic in zip(arg.direct_deps_info, direct_dep_dynamics)
+    }
     common_args = _common_compile_module_args(
         actions,
         arg = arg,
@@ -2385,7 +2389,10 @@ _dynamic_do_compile = dynamic_actions(
         "arg": dynattrs.value(_DynamicDoCompileOptions),
         "pkg_deps": dynattrs.option(dynattrs.dynamic_value()),
         "outputs_dict": dynattrs.dict(Artifact, dynattrs.output()),
-        "direct_deps_by_name": dynattrs.dict(str, dynattrs.tuple(dynattrs.value(Artifact), dynattrs.dynamic_value())),
+        # Only the dynamic values are declared here; names and package dbs are
+        # taken from arg.direct_deps_info. Every dynattrs entry is stored per
+        # dynamic action for the lifetime of the analysis, so keep them minimal.
+        "direct_dep_dynamics": dynattrs.list(dynattrs.dynamic_value()),
     },
 )
 
@@ -2511,10 +2518,7 @@ def compile(
             o: o.as_output()
             for o in interfaces + extra_interfaces + objects + extra_objects + hie_files + hpc_dirs + stub_dirs + abi_hashes
         },
-        direct_deps_by_name = {
-            info.value.name: (info.value.empty_db, info.value.dynamic[enable_profiling])
-            for info in direct_deps_info
-        },
+        direct_dep_dynamics = [info.value.dynamic[enable_profiling] for info in direct_deps_info],
         arg = _DynamicDoCompileOptions(
             artifact_suffix = artifact_suffix,
             compiler_flags = ctx.attrs.compiler_flags,
