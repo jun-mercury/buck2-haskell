@@ -1824,17 +1824,29 @@ def _haskell_executable(ctx: AnalysisContext) -> HaskellExecutableOutput:
             _EVAL_RUNNER,
             is_executable = True,
         )
+
+        # One executable, because a test runner takes one: a launcher with the
+        # runner, the request and the client written into it. The paths are
+        # relative to the project root, where tests and `buck2 run` start.
+        launcher = ctx.actions.write(
+            "__{}__eval".format(ctx.label.name),
+            [
+                "#!/usr/bin/env bash",
+                cmd_args("exec", runner, compiled.eval_args, haskell_toolchain.worker_client, '"$@"', delimiter = " "),
+            ],
+            is_executable = True,
+            allow_args = True,
+        )
+
+        # The request's inputs are written with its file, but a test or
+        # `buck2 run` builds only what the command names. Naming the
+        # binary's own interfaces runs their compiles, whose inputs are
+        # every interface of the closure, so the restore finds them.
         sub_targets["eval"] = [
-            DefaultInfo(default_output = compiled.eval_args),
-            # The request's inputs are written with its file, but a test or
-            # `buck2 run` builds only what the command names. Naming the
-            # binary's own interfaces runs their compiles, whose inputs are
-            # every interface of the closure, so the restore finds them.
+            DefaultInfo(default_output = launcher, other_outputs = [compiled.eval_args]),
             RunInfo(args = cmd_args(
-                runner,
-                compiled.eval_args,
-                haskell_toolchain.worker_client,
-                hidden = resources_hidden + compiled.interfaces,
+                launcher,
+                hidden = [runner, compiled.eval_args, haskell_toolchain.worker_client] + resources_hidden + compiled.interfaces,
             )),
         ]
     sub_targets.update(_haskell_module_sub_targets(
