@@ -1826,11 +1826,15 @@ def _haskell_executable(ctx: AnalysisContext) -> HaskellExecutableOutput:
         )
         sub_targets["eval"] = [
             DefaultInfo(default_output = compiled.eval_args),
+            # The request's inputs are written with its file, but a test or
+            # `buck2 run` builds only what the command names. Naming the
+            # binary's own interfaces runs their compiles, whose inputs are
+            # every interface of the closure, so the restore finds them.
             RunInfo(args = cmd_args(
                 runner,
                 compiled.eval_args,
                 haskell_toolchain.worker_client,
-                hidden = resources_hidden,
+                hidden = resources_hidden + compiled.interfaces,
             )),
         ]
     sub_targets.update(_haskell_module_sub_targets(
