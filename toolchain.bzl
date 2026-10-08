@@ -57,6 +57,14 @@ HaskellToolchainInfo = provider(
         # environment runs and returns the response's exit code. Without one,
         # a worker action has no executable outside the worker.
         "worker_client": provider_field(RunInfo | None, default = None),
+        # The worker itself, as a Bazel-protocol persistent worker: a remote
+        # executor that supports the protocol (BuildBuddy's persistentWorkerKey)
+        # keeps it in a recycled runner and sends it each request on stdin. Set,
+        # a worker request's arguments travel as one @argfile, the only form
+        # buck2 sends such a worker, and `worker_client` is the fallback
+        # executable, which must name the worker's files so that they reach the
+        # action's input root.
+        "bazel_worker": provider_field(RunInfo | None, default = None),
         "ghc_dir": provider_field(Artifact | None, default = None),
         # RTS options passed to GHC, changing the behavior of the compiler process, not the resulting binaries like
         # `-with-rtsopts` would.

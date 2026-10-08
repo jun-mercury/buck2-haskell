@@ -611,7 +611,7 @@ def _dynamic_target_metadata_impl(
         md_args.add(cmd_args(ghc_args_file, prepend = "--ghc-args", hidden = [output, makefile.as_output()]))
 
         actions.run(
-            md_args,
+            worker_request_args(actions, haskell_toolchain, "haskell_metadata_{}.worker.args".format(unit.name), md_args),
             category = "haskell_metadata",
             identifier = arg.suffix if arg.suffix else None,
             exe = worker_exe(arg.worker, haskell_toolchain),
@@ -966,9 +966,23 @@ def add_worker_args(
 # before. Without a worker instance the request can only go through the
 # client, so the client is the executable (see `check_is_worker_execute`).
 def worker_exe(worker: WorkerInfo | None, haskell_toolchain: HaskellToolchainInfo) -> WorkerRunInfo | RunInfo:
+    if haskell_toolchain.bazel_worker != None:
+        return WorkerRunInfo(
+            worker = WorkerInfo(
+                exe = haskell_toolchain.bazel_worker,
+                supports_bazel_remote_persistent_worker_protocol = True,
+            ),
+            exe = haskell_toolchain.worker_client or [],
+        )
     if worker == None:
         return haskell_toolchain.worker_client
     return WorkerRunInfo(worker = worker, exe = haskell_toolchain.worker_client or [])
+
+# A Bazel-protocol worker takes its request as one @argfile.
+def worker_request_args(actions: AnalysisActions, haskell_toolchain: HaskellToolchainInfo, name: str, args: cmd_args) -> cmd_args:
+    if haskell_toolchain.bazel_worker == None:
+        return args
+    return at_argfile(actions = actions, name = name, args = args, allow_args = True)
 
 def make_package_env(
         *,
@@ -1665,10 +1679,12 @@ def _compile_module(
     if is_worker_execute:
         worker_args["exe"] = worker_exe(worker, haskell_toolchain)
 
+    request = cmd_args(common_args.command, compile_cmd_args)
+    if is_worker_execute:
+        request = worker_request_args(actions, haskell_toolchain, "{}_{}.worker.args".format(category_prefix, module_name), request)
     actions.run(
         cmd_args(
-            common_args.command,
-            compile_cmd_args,
+            request,
             hidden = [
                 abi_tag.tag_artifacts(dependency_modules.project_as_args("interfaces")),
                 abi_hash_inputs,
