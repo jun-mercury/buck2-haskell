@@ -1828,7 +1828,7 @@ def _haskell_executable(ctx: AnalysisContext) -> HaskellExecutableOutput:
         # One executable, because a test runner takes one: a launcher with the
         # runner, the request and the client written into it. The paths are
         # relative to the project root, where tests and `buck2 run` start.
-        launcher = ctx.actions.write(
+        launcher, _ = ctx.actions.write(
             "__{}__eval".format(ctx.label.name),
             [
                 "#!/usr/bin/env bash",
