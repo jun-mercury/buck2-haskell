@@ -1236,7 +1236,7 @@ def _common_compile_module_args(
     # there and the directory is empty, so GHC falls back to dlopen("libfoo.so")
     # against the worker's system paths and, under -Werror, fails on
     # -Wmissed-extra-shared-lib. Locally the whole buck-out masks this.
-    extra_libs = actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info).reduce("extra_libs").extra_libs
+    extra_libs = get_extra_lib_info(arg.link_style, arg.direct_extra_libs).extra_libs
 
     libs = actions.tset(HaskellLibraryInfoTSet, children = arg.direct_deps_info)
 
