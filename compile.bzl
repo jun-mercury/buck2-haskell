@@ -55,6 +55,7 @@ load(
     "HaskellToolchainPackageDbTSet",
     "augment_toolchain_package_db",
     "remote_execution_class",
+    "worker_timeout",
 )
 load(
     ":util.bzl",
@@ -619,7 +620,7 @@ def _dynamic_target_metadata_impl(
             identifier = arg.suffix if arg.suffix else None,
             exe = worker_exe(arg.worker, haskell_toolchain),
             allow_cache_upload = arg.allow_cache_upload,
-            **remote_execution_class(haskell_toolchain, "small")
+            **(remote_execution_class(haskell_toolchain, "small") | worker_timeout(haskell_toolchain))
         )
     else:
         md_args = cmd_args()
@@ -1702,6 +1703,7 @@ def _compile_module(
     worker_args = {}
     if is_worker_execute:
         worker_args["exe"] = worker_exe(worker, haskell_toolchain)
+        worker_args = worker_args | worker_timeout(haskell_toolchain)
 
     request = cmd_args(common_args.command, compile_cmd_args)
     if is_worker_execute:
