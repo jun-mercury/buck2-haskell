@@ -711,6 +711,9 @@ _DynamicLinkSharedOptions = record(
     worker_target_id = str,
     allow_cache_upload = bool,
     link_weight = int | None,
+    # The native libraries of every dependency package, which GHC links in
+    # from the `extra-libraries` of their package confs.
+    dep_extra_libs = list[Artifact],
 )
 
 def _dynamic_link_shared_impl(
@@ -770,7 +773,7 @@ def _dynamic_link_shared_impl(
     # confs name a directory; without the artifacts as inputs a remote worker
     # has the directory empty and ld reports `cannot find -luuid`.
     link_cmd_hidden.extend(extra_libs)
-    link_cmd_hidden.extend(libs.reduce("extra_libs").extra_libs)
+    link_cmd_hidden.extend(arg.dep_extra_libs)
 
     # link group
     for lg in arg.link_group_libs:
@@ -979,6 +982,14 @@ def _build_haskell_lib(
                 link_args = link_args,
                 allow_cache_upload = ctx.attrs.allow_cache_upload,
                 link_weight = ctx.attrs.link_weight,
+                dep_extra_libs = get_extra_lib_info(
+                    link_style,
+                    traverse_extra_libraries(make_extra_libraries_tset(
+                        ctx.actions,
+                        extra_libraries = [],
+                        haskell_libraries = attr_deps_haskell_link_infos(ctx),
+                    )),
+                ).extra_libs,
             ),
         ))
 
