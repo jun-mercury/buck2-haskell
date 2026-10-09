@@ -620,7 +620,9 @@ def _dynamic_target_metadata_impl(
             identifier = arg.suffix if arg.suffix else None,
             exe = worker_exe(arg.worker, haskell_toolchain),
             allow_cache_upload = arg.allow_cache_upload,
-            **(remote_execution_class(haskell_toolchain, "small") | worker_timeout(haskell_toolchain))
+            # No "small" class: a worker request reports the whole worker's
+            # memory, gigabytes, and is sized by the worker's own row.
+            **worker_timeout(haskell_toolchain)
         )
     else:
         md_args = cmd_args()
