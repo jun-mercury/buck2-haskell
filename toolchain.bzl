@@ -82,6 +82,10 @@ HaskellToolchainInfo = provider(
         # A buck2 without `ctx.actions.run(remote_execution_properties)`
         # rejects the argument, so an unset table passes nothing.
         "action_classes": provider_field(dict[str, dict[str, str]] | None, default = None),
+        # Seconds after which an action that carries a worker (a compile or
+        # metadata request) ends as a timeout, so a wedged worker fails the
+        # action instead of holding it forever. None sets no timeout.
+        "worker_timeout_s": provider_field(int | None, default = None),
     },
 )
 
@@ -91,6 +95,11 @@ def remote_execution_class(haskell_toolchain, action_class: str) -> dict[str, ty
     if not properties:
         return {}
     return {"remote_execution_properties": properties}
+
+def worker_timeout(haskell_toolchain) -> dict[str, typing.Any]:
+    if not haskell_toolchain.worker_timeout_s:
+        return {}
+    return {"timeout_seconds": haskell_toolchain.worker_timeout_s}
 
 HaskellToolchainLibrary = provider(
     fields = {
