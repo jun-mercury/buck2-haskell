@@ -1731,7 +1731,13 @@ def _compile_module(
         cmd_args(
             request,
             hidden = [
-                abi_tag.tag_artifacts(dependency_modules.project_as_args("interfaces")),
+                # A module that runs splices keys on its dependencies'
+                # interfaces whole: with -fprefer-byte-code the code a splice
+                # runs is the byte code in those interfaces, which a body-only
+                # edit changes while the ABI hash, and so the dep file, does
+                # not. Tagged, such an edit was served stale from dep-file
+                # state.
+                dependency_modules.project_as_args("interfaces") if enable_th else abi_tag.tag_artifacts(dependency_modules.project_as_args("interfaces")),
                 abi_tag.tag_artifacts(common_args.dep_unit_plans),
                 abi_hash_inputs,
             ] + hidden_toolchain_deps,
