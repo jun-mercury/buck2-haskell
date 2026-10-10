@@ -964,10 +964,17 @@ CommonCompileModuleArgs = record(
     extra_libs = field(list[Artifact]),
     # Worker mode: what a compile request's server reads to restore a unit it
     # does not hold, and nothing in the module's own arguments names: the
-    # transitive dependency units' build plans, each with its metadata files
-    # (see `target_metadata`), and the toolchain package dbs the unit's
-    # `-package-db` flags list. Empty in one-shot mode.
+    # toolchain package dbs the unit's `-package-db` flags list, and the
+    # dependency units' package confs, which say what each unit exposes.
+    # Empty in one-shot mode.
     unit_inputs = field(cmd_args),
+    # Worker mode: the transitive dependency units' build plans, each with its
+    # metadata files (see `target_metadata`). A compile tags them, so they
+    # leave its dep-file key unless the worker reports reading them: what a
+    # downstream module sees of an upstream unit reaches it through that
+    # unit's interfaces, already tagged, and its exposed modules, kept in
+    # `unit_inputs`. Empty in one-shot mode.
+    dep_unit_plans = field(cmd_args),
 )
 
 def add_worker_args(
@@ -1270,11 +1277,13 @@ def _common_compile_module_args(
         # working directory and never notices. A plan carries its args files
         # as associated artifacts (see `target_metadata`).
         unit_inputs = cmd_args(hidden = [
-            libs.project_as_args("build_plans"),
+            libs.project_as_args("package_confs"),
             toolchain_package_db_tset.project_as_args("toolchain_package_db"),
         ])
+        dep_unit_plans = cmd_args(libs.project_as_args("build_plans"))
     else:
         unit_inputs = cmd_args()
+        dep_unit_plans = cmd_args()
 
         # Add -package-db and -package/-expose-package flags for each Haskell
         # library dependency.
@@ -1342,6 +1351,7 @@ def _common_compile_module_args(
         toolchain_package_db = toolchain_package_db,
         extra_libs = extra_libs,
         unit_inputs = unit_inputs,
+        dep_unit_plans = dep_unit_plans,
     )
 
 # Arguments for GHC when running in oneshot mode.
@@ -1713,6 +1723,7 @@ def _compile_module(
             request,
             hidden = [
                 abi_tag.tag_artifacts(dependency_modules.project_as_args("interfaces")),
+                abi_tag.tag_artifacts(common_args.dep_unit_plans),
                 abi_hash_inputs,
             ] + hidden_toolchain_deps,
         ),
