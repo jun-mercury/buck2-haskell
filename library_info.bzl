@@ -126,6 +126,18 @@ def _json_as_dep_units(lib: HaskellLibraryInfo) -> struct:
 def _project_as_build_plans(lib: HaskellLibraryInfo) -> cmd_args:
     return cmd_args(lib.md_file) if lib.md_file != None else cmd_args()
 
+# What resolving an import against this unit reads: its id, exposure and
+# `exposed-modules`. A downstream compile keys on these even where it tags the
+# unit's build plan, because a module added to or dropped from the exposed set
+# changes how an `import` resolves without changing any interface the compile
+# already read.
+# The `deps` conf, the one `ghc -M` uses, lists the same exposed-modules as the
+# final conf, and what it carries along is the dependencies' deps confs and
+# dbs, not the registered package db and native libraries the final conf names.
+def _project_as_package_confs(lib: HaskellLibraryInfo) -> cmd_args:
+    conf = lib.conf.deps_conf or lib.conf.final_conf or lib.conf.empty_conf
+    return cmd_args(conf) if conf != None else cmd_args()
+
 HaskellLibraryInfoTSet = transitive_set(
     args_projections = {
         "package_db": _project_as_package_db,
@@ -134,6 +146,7 @@ HaskellLibraryInfoTSet = transitive_set(
         "libs": _project_as_libs,
         "interfaces": _project_as_interfaces,
         "build_plans": _project_as_build_plans,
+        "package_confs": _project_as_package_confs,
     },
     reductions = {
         "packages": _get_package_deps,
