@@ -2265,7 +2265,7 @@ def compile(
     abi_hashes = [
         module.hash
         for module in modules.values()
-        if module.stub_dir != None
+        if module.hash != None
     ]
 
     # Collect library dependencies. Note that these don't need to be in a
