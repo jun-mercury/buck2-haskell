@@ -306,7 +306,7 @@ def _modules_by_name(
                 short_path_stripped = _strip_prefix("/", s)
                 interface_path = paths.replace_extension(short_path_stripped, "." + hisuf + bootsuf)
             object_path = paths.replace_extension(short_path_stripped, "." + osuf + bootsuf)
-            hie_path = paths.replace_extension(short_path_stripped, ".hie")
+            hie_path = paths.replace_extension(short_path_stripped, ".hie" + bootsuf)
 
         interface = ctx.actions.declare_output("mod-" + suffix, interface_path)
         interfaces = [interface]
