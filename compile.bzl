@@ -1735,13 +1735,17 @@ def _compile_module(
         cmd_args(
             request,
             hidden = [
-                # A module that runs splices keys on its dependencies'
+                # A oneshot module that runs splices keys on its dependencies'
                 # interfaces whole: with -fprefer-byte-code the code a splice
                 # runs is the byte code in those interfaces, which a body-only
-                # edit changes while the ABI hash, and so the dep file, does
-                # not. Tagged, such an edit was served stale from dep-file
-                # state.
-                dependency_modules.project_as_args("interfaces") if enable_th else abi_tag.tag_artifacts(dependency_modules.project_as_args("interfaces")),
+                # edit changes while the ABI hash, and so a .hash-only dep
+                # file, does not. Tagged, such an edit was served stale from
+                # dep-file state. A worker compile tags them like any other
+                # module's: the worker's dep file names the .hi of every module
+                # whose byte code a splice used (GHC records it as
+                # UsageHomeModuleInterface), so that edit still re-runs the
+                # splicing compile.
+                dependency_modules.project_as_args("interfaces") if enable_th and not is_worker_execute else abi_tag.tag_artifacts(dependency_modules.project_as_args("interfaces")),
                 abi_tag.tag_artifacts(common_args.dep_unit_plans),
                 abi_hash_inputs,
             ] + hidden_toolchain_deps,
