@@ -54,6 +54,14 @@ def main():
         help="Output path of the abi file to create.",
     )
     parser.add_argument(
+        "--abi-from-plugin",
+        required=False,
+        type=Path,
+        help="Path the oneshot driver plugin writes this module's ABI hash "
+             "to. No second GHC starts for it; the wrapper only checks the "
+             "plugin wrote it.",
+    )
+    parser.add_argument(
         "--bin-path",
         type=Path,
         action="append",
@@ -109,6 +117,8 @@ def main():
 
     recompute_abi_hash(args.ghc, args.abi_out)
 
+    check_plugin_abi_hash(args.abi_from_plugin)
+
     if args.buck2_dep:
         # write an empty dep file, to signal that all tagged files are unused
         try:
@@ -135,6 +145,34 @@ def main():
             raise e
 
     return 0
+
+
+def check_plugin_abi_hash(abi_out):
+    """Check the oneshot plugin wrote the ABI hash buck2 declared.
+
+    buck2 declares this file an output of the compile, so the path has to be
+    named on the command line whichever side writes it. Naming it here is also
+    the only place the two derivations of that path are checked against each
+    other: the build builds it from the interface path it told GHC through
+    -hisuf, and the plugin builds it from GHC's ModLocation. A silent
+    disagreement would otherwise surface as an unbound-artifact error with no
+    cause attached to it.
+    """
+    if abi_out:
+        if not abi_out.exists():
+            # Say what the plugin did write. The two derivations of this path
+            # disagreeing is the likely cause, and the sibling list names the
+            # disagreement instead of leaving it to be guessed at.
+            stem = abi_out.name.split(".")[0]
+            siblings = sorted(
+                p.name for p in abi_out.parent.glob(f"{stem}*") if p.is_file()
+            )
+            raise SystemExit(
+                f"the oneshot plugin wrote no ABI hash at {abi_out}; "
+                f"files for this module: {siblings}"
+            )
+        if abi_out.stat().st_size == 0:
+            raise SystemExit(f"the oneshot plugin wrote an empty ABI hash at {abi_out}")
 
 
 def recompute_abi_hash(ghc, abi_out):

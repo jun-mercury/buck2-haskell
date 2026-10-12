@@ -1544,13 +1544,17 @@ def _compile_make_args(
     )
 
 # Arguments for `ghc_wrapper` or the worker needed in both modes.
+#
+# `--abi-out` is not among them. The worker writes the ABI hash itself from the
+# interface it just built, and a one-shot compile has the driver plugin write
+# it, so each mode asks for it where it is produced. A one-shot compile with no
+# plugin still needs `ghc_wrapper` to recompute it, and says so there.
 def _shared_wrapper_args(
         tagged_dep_file: TaggedCommandLine | TaggedValue,
         module: _Module,
         outputs: ArtifactOutputMap) -> cmd_args:
     args = cmd_args()
     args.add("--buck2-dep", tagged_dep_file)
-    args.add("--abi-out", outputs.outputs[module.hash])
     return args
 
 def _compile_module(
@@ -1650,6 +1654,9 @@ def _compile_module(
             md_file = md_file,
         ))
 
+        # The worker writes the ABI hash from the interface it built.
+        wrapper_args_for_file.add("--abi-out", outputs.outputs[module.hash])
+
         # The worker narrows the dep file to the files GHC actually consulted.
         # Tagging here keeps an ABI change from invalidating every module that can reach the
         # change, deferring to the worker's narrowed set.
@@ -1703,6 +1710,26 @@ def _compile_module(
             oneshot_linkables = oneshot_linkables,
             oneshot_preload = oneshot_preload,
         ))
+
+        # The plugin writes the hash wherever it is loaded, and it is loaded on
+        # exactly the two paths `_compile_oneshot_args` branches on: with the
+        # linkables when the module runs splices, through the preload when it
+        # does not. A module that gets neither, because it is named in
+        # `oneshot_preload_exclude` or because the toolchain carries no plugin,
+        # still needs `ghc_wrapper` to start a second GHC and recompute it.
+        # Testing `oneshot_linkables` alone would read as loaded for every
+        # non-Template-Haskell module, which is most of them, and drop the
+        # fallback from compiles the plugin never reaches.
+        plugin_writes_hash = oneshot_linkables != None if enable_th else oneshot_preload != None
+        if plugin_writes_hash:
+            # Named even though the plugin writes it: buck2 declares this file
+            # an output of the compile, so an action that never mentions it
+            # fails analysis with "Artifact must be bound by now". The wrapper
+            # starts no second GHC for this flag, it only checks the file
+            # arrived.
+            wrapper_args_for_file.add("--abi-from-plugin", outputs.outputs[module.hash])
+        else:
+            wrapper_args_for_file.add("--abi-out", outputs.outputs[module.hash])
 
         wrapper_args_for_file.add(_wrapper_oneshot_args(
             actions,
