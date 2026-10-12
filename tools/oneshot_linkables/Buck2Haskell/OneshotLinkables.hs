@@ -1,3 +1,5 @@
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
@@ -61,6 +63,12 @@ import GHC.Driver.DynFlags (DynFlags, ghcMode, isOneShot, xopt)
 import GHC.Driver.Env.Types (Hsc, HscEnv (..))
 import GHC.Driver.Main (getHscEnv)
 import GHC.Driver.Plugins (CommandLineOption, Plugin (..), defaultPlugin, purePlugin)
+import GHC.Driver.Hooks (Hooks (..))
+import GHC.Driver.Pipeline.Execute (runPhase)
+import GHC.Driver.Pipeline.Phases (PhaseHook (..), TPhase (..))
+import GHC.Unit.Module.Location (ModLocation (..))
+import GHC.Unit.Module.ModIface (mi_final_exts, mi_mod_hash)
+import GHC.Unit.Module.Status (HscRecompStatus (..))
 import GHC.Iface.Load (WhereFrom (ImportBySystem), loadInterface, loadSysInterface)
 import qualified GHC.LanguageExtensions as LangExt
 import GHC.Tc.Utils.Monad (IfG, initIfaceLoad)
@@ -69,7 +77,7 @@ import GHC.Types.SrcLoc (Located, unLoc)
 import GHC.Unit.Finder (FindResult (Found), findImportedModule)
 import GHC.Unit.Module (Module, ModuleName, mkModule, moduleUnit)
 import GHC.Unit.Module.Deps (Dependencies (..), Usage (..))
-import GHC.Unit.Module.ModSummary (ModSummary, ms_hspp_opts, ms_textual_imps)
+import GHC.Unit.Module.ModSummary (ModSummary, ms_hspp_opts, ms_location, ms_textual_imps)
 import GHC.Unit.Module.ModIface (ModIface, mi_deps, mi_usages)
 import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..), ModuleNameWithIsBoot)
 import GHC.Utils.Outputable (text)
@@ -120,10 +128,78 @@ plugin =
   defaultPlugin
     { parsedResultAction = \opts summary parsed -> parsed <$ loadInterfaces opts summary
     , pluginRecompile = purePlugin
-#ifdef BUCK2_HASKELL_ONESHOT_LINKER
-    , driverPlugin = \_ hsc_env -> pure hsc_env {hsc_linkables = linkables}
-#endif
+    , driverPlugin = \_opts hsc_env -> pure (installAbiHashHook (withOneshotLinkables hsc_env))
     }
+  where
+#ifdef BUCK2_HASKELL_ONESHOT_LINKER
+    withOneshotLinkables hsc_env = hsc_env {hsc_linkables = linkables}
+#else
+    withOneshotLinkables hsc_env = hsc_env
+#endif
+
+-- | Where this module's @.hash@ goes.
+--
+-- 'ml_hi_file' is the interface GHC is about to write, boot suffix included:
+-- by the time a phase holds a 'ModLocation', GHC has already applied
+-- 'addBootSuffixLocn' to it. The user's guide calls the field @foo.hi@ "even
+-- when an hi-boot file exists", which describes the location before that
+-- step, and taking it at its word wrote @Foo.dyn_hi-boot-boot.hash@ for every
+-- hs-boot module while buck2 waited for @Foo.dyn_hi-boot.hash@.
+hashPath :: ModLocation -> FilePath
+hashPath location = ml_hi_file location ++ ".hash"
+
+-- | Write the module's ABI hash beside its interface, so that a one-shot
+-- compile does not need a second GHC to read it back.
+--
+-- Without this, @ghc_wrapper@ starts GHC again with @--show-iface-abi-hash@
+-- purely to print a hash this process already holds. The hash is
+-- @mi_mod_hash@, which 'show' renders as the same 32 hex characters that
+-- flag prints, so the file is byte-identical to the wrapper's: the bare
+-- token, no trailing newline. Rendering through 'ppr' instead would risk a
+-- line break, which is why the worker's sidecar writer strips whitespace.
+--
+-- Two phases can finish a compile, and a missing @.hash@ fails the action
+-- because buck2 declares it an output:
+--
+--   * 'T_HscBackend' returns the finished interface when the module is
+--     compiled or its interface updated;
+--   * 'T_HscRecomp' returns 'HscUpToDate' when nothing needs doing, and the
+--     backend never runs. Its interface is the one GHC loaded, which carries
+--     the same hash. ('HscRecomp' carries only a partial interface, which has
+--     no final hash, so the backend hook is the one that sees it.)
+installAbiHashHook :: HscEnv -> HscEnv
+installAbiHashHook hsc_env =
+  hsc_env
+    { hsc_hooks = (hsc_hooks hsc_env) {runPhaseHook = Just (PhaseHook (hook inner))}
+    }
+  where
+    inner :: TPhase a -> IO a
+    inner = case runPhaseHook (hsc_hooks hsc_env) of
+      Just (PhaseHook k) -> k
+      Nothing -> runPhase
+
+    hook :: (forall b. TPhase b -> IO b) -> TPhase a -> IO a
+    hook k phase = do
+      result <- k phase
+      case phase of
+        T_HscBackend _ _ _ _ location _ -> case result of
+          (_, iface, _, _) -> writeAbiHash (hashPath location) iface
+        -- This arm cannot fire under buck2 and is kept for GHC's sake rather
+        -- than ours. `HscUpToDate` means GHC found the interface already
+        -- current, which needs the interface to exist when the compile starts;
+        -- buck2 passes it as an output instead (`-ohi`, compile.bzl:1424) and a
+        -- remote action begins with none of its outputs present, so every
+        -- compile takes `HscRecompNeeded` and runs the backend. Nothing here
+        -- claims coverage for it.
+        T_HscRecomp{} -> case result of
+          (_, summary, HscUpToDate iface _) ->
+            writeAbiHash (hashPath (ms_location summary)) iface
+          _ -> pure ()
+        _ -> pure ()
+      pure result
+
+writeAbiHash :: FilePath -> ModIface -> IO ()
+writeAbiHash path iface = writeFile path (show (mi_mod_hash (mi_final_exts iface)))
 
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER
 linkables :: HscEnv -> LoaderState -> IO Linkables
