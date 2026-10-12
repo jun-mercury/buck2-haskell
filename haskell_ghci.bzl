@@ -972,7 +972,7 @@ def haskell_ghci_impl(ctx: AnalysisContext) -> list[Provider]:
                 for tool in plugin_dep[GhcPluginInfo].tools:
                     plugin_tool_paths.append(tool[RunInfo])
 
-        src_md_file = target_metadata(
+        src_md_file, _src_dep_md_file = target_metadata(
             ctx,
             link_style = compile_link_style,
             enable_profiling = enable_profiling,
