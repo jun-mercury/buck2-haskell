@@ -123,7 +123,6 @@ load(
     "get_artifact_suffix",
     "get_source_prefixes",
     "make_haskell_names_from_label",
-    "md_module_mapping",
     "output_extensions",
     "src_to_module_name",
 )
@@ -449,32 +448,32 @@ _WritePackageConfOptions = record(
     artifact_suffix = str,
     srcs = list[typing.Any],
     strip_prefix = list[str],
+    # The exposed modules and the module map `get_source_prefixes` takes,
+    # both from analysis (`CompileResultInfo.module_sources`).
+    modules = list[str],
+    module_map = dict[str, str],
     haskell_toolchain = HaskellToolchainInfo,
     registerer = RunInfo,
     extra_libs = list[Artifact],
-    purpose = str,
 )
 
 def _write_package_conf_impl(
         actions: AnalysisActions,
-        md_file: ArtifactValue,
         toolchain_lib_dyn_infos: list[ResolvedDynamicValue],
         extra_lib_dyns: list[ResolvedDynamicValue],
         pkg_conf: OutputArtifact,
         db: OutputArtifact,
         libname: str | None,
         arg: _WritePackageConfOptions) -> list[Provider]:
-    md = md_file.read_json()
-    module_map = md_module_mapping(md)
-
-    source_prefixes = get_source_prefixes(arg.srcs, module_map)
+    # The exposed modules come from analysis, not from this target's metadata.
+    # Read from the metadata, every registration waited on the target's
+    # `ghc -M`, which waits on every dependency's registration, so a cached
+    # rerun walked two actions per package level in series (some 650 cache
+    # hits on mwb). Analysis already names every module: its outputs are
+    # declared under these names.
+    modules = arg.modules
+    source_prefixes = get_source_prefixes(arg.srcs, arg.module_map)
     source_prefixes_excluded = [prefix for prefix in source_prefixes if prefix not in arg.strip_prefix]
-
-    modules = [
-        module
-        for module in md["module_graph"].keys()
-        if not module.endswith("-boot")
-    ]
 
     # XXX use a single import dir when this package db is used for resolving dependencies with ghc -M,
     #     which works around an issue with multiple import dirs resulting in GHC trying to locate interface files
@@ -505,16 +504,13 @@ def _write_package_conf_impl(
         "import-dirs:" + ", ".join(import_dirs),
     )
 
-    def _select_db_conf(lib):
-        if arg.purpose == "deps":
-            return [lib.deps_db, lib.conf.deps_conf]
-        elif arg.purpose == "empty":
-            return [lib.empty_db, lib.conf.empty_conf]
-        else:
-            return [lib.db, lib.conf.final_conf]
-
+    # The dependencies are named, not taken as inputs. The registerer
+    # registers with --force into a one-package db, so nothing checks them
+    # here, and every consumer collects the transitive dbs from the tset
+    # itself. As inputs they chained each registration onto its
+    # dependencies' registrations.
     toolchain_deps_args = [cmd_args(id) for id in toolchain_lib_ids]
-    project_deps_args = [cmd_args(lib.id, hidden = _select_db_conf(lib)) for lib in arg.hlis]
+    project_deps_args = [cmd_args(lib.id) for lib in arg.hlis]
     depends = cmd_args(cmd_args(toolchain_deps_args + project_deps_args, delimiter = ", "), format = "depends: {}")
     conf.add(depends)
 
@@ -569,7 +565,6 @@ def _write_package_conf_impl(
 _write_package_conf = dynamic_actions(
     impl = _write_package_conf_impl,
     attrs = {
-        "md_file": dynattrs.artifact_value(),
         "toolchain_lib_dyn_infos": dynattrs.list(dynattrs.dynamic_value()),
         "extra_lib_dyns": dynattrs.list(dynattrs.dynamic_value()),
         "pkg_conf": dynattrs.output(),
@@ -607,7 +602,7 @@ def _make_package(
         profiling: list[bool],
         enable_profiling: bool,
         use_empty_lib: bool,
-        md_file: Artifact,
+        module_sources: dict[str, Artifact],
         extra_lib_info: ExtraLibraryInfo,
         for_deps: bool = False):
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
@@ -615,15 +610,12 @@ def _make_package(
     if for_deps:
         pkg_conf = ctx.actions.declare_output("pkg-" + artifact_suffix + "_deps.conf")
         db = ctx.actions.declare_output("db-" + artifact_suffix + "_deps", dir = True)
-        purpose = "deps"
     elif use_empty_lib:
         pkg_conf = ctx.actions.declare_output("pkg-" + artifact_suffix + "_empty.conf")
         db = ctx.actions.declare_output("db-" + artifact_suffix + "_empty", dir = True)
-        purpose = "empty"
     else:
         pkg_conf = ctx.actions.declare_output("pkg-" + artifact_suffix + ".conf")
         db = ctx.actions.declare_output("db-" + artifact_suffix, dir = True)
-        purpose = "final"
 
     link_infos = get_link_infos_from_extra_lib_info(
         ctx.actions,
@@ -649,15 +641,21 @@ def _make_package(
         artifact_suffix = artifact_suffix,
         srcs = ctx.attrs.srcs,
         strip_prefix = ctx.attrs.strip_prefix,
+        modules = module_sources.keys(),
+        # The shape `md_module_mapping` gives: the name a source's path
+        # suggests, to the name it is compiled under, where they differ.
+        module_map = {
+            src_to_module_name(src.short_path): name
+            for name, src in module_sources.items()
+            if src_to_module_name(src.short_path) != name
+        },
         haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo],
         registerer = ctx.attrs._ghc_pkg_registerer[RunInfo],
         extra_libs = extra_lib_info.extra_libs,
-        purpose = purpose,
     )
 
     ctx.actions.dynamic_output_new(
         _write_package_conf(
-            md_file = md_file,
             toolchain_lib_dyn_infos = toolchain_lib_dyn_infos,
             extra_lib_dyns = extra_lib_info.extra_lib_dyns,
             pkg_conf = pkg_conf.as_output(),
@@ -1075,7 +1073,7 @@ def _build_haskell_lib(
         interface_artifacts.keys(),
         enable_profiling = enable_profiling,
         use_empty_lib = False,
-        md_file = md_file,
+        module_sources = compiled.module_sources,
         extra_lib_info = extra_lib_info,
     )
     empty_db, empty_conf = _make_package(
@@ -1087,7 +1085,7 @@ def _build_haskell_lib(
         interface_artifacts.keys(),
         enable_profiling = enable_profiling,
         use_empty_lib = True,
-        md_file = md_file,
+        module_sources = compiled.module_sources,
         extra_lib_info = extra_lib_info,
     )
     deps_db, deps_conf = _make_package(
@@ -1099,7 +1097,7 @@ def _build_haskell_lib(
         interface_artifacts.keys(),
         enable_profiling = enable_profiling,
         use_empty_lib = True,
-        md_file = md_file,
+        module_sources = compiled.module_sources,
         extra_lib_info = extra_lib_info,
         for_deps = True,
     )

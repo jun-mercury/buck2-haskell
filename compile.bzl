@@ -148,6 +148,11 @@ CompileResultInfo = record(
     hashes = field(list[Artifact]),
     producing_indices = field(bool),
     module_tsets = field(DynamicValue),
+    # Each non-boot module's name, as its outputs are declared under, and
+    # its source. A package conf takes its exposed modules from here rather
+    # than from the target's metadata, so that registering a package never
+    # waits on that target's `ghc -M`; see `_write_package_conf_impl`.
+    module_sources = field(dict[str, Artifact], {}),
 )
 
 PackagesInfo = record(
@@ -2603,4 +2608,9 @@ def compile(
         hpc_dirs = hpc_dirs,
         producing_indices = False,
         module_tsets = dyn_module_tsets,
+        module_sources = {
+            module.name: module.source
+            for module in modules.values()
+            if not is_haskell_boot(module.source.short_path)
+        },
     )
