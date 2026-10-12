@@ -1402,6 +1402,12 @@ def _compile_oneshot_args(
     # what loads them. See tools/oneshot_linkables/Buck2Haskell/OneshotLinkables.hs.
     if enable_th:
         args.add("-fprefer-byte-code")
+        # A splice runs first-party package code as the byte code stored in
+        # that package's interfaces, which only -fpackage-db-byte-code lets a
+        # oneshot compile load. Upstream 56fb9b79 dropped the flag where the
+        # monorepo builds through the worker; without it a oneshot splice
+        # stops on "Could not load ... dependency unresolved".
+        args.add("-fpackage-db-byte-code")
         if oneshot_linkables != None:
             args.add(oneshot_linkables)
 
