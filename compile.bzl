@@ -881,9 +881,22 @@ def get_packages_info(
     packagedb_args = cmd_args()
     packagedb_set = {}
 
-    for lib in libs.traverse():
+    # A one-shot metadata step runs ghc -M, which only resolves each import to
+    # the package exposing it, so it reads its direct dependencies' deps dbs
+    # alone: their confs name no dependencies (see `_write_package_conf_impl`),
+    # so GHC needs nothing transitive to accept them. Handing it the whole
+    # closure made it initialise every unit in it, about ten thousand for a
+    # spec binary: 12 to 14 s of each step, against 0.2 s with the direct dbs
+    # and byte-identical output (claim ghc-m-direct-deps-without-depends).
+    if for_deps and not is_worker_execute:
+        db_libs = haskell_direct_deps_lib_infos
+    else:
+        db_libs = libs.traverse()
+    for lib in db_libs:
         packagedb_set[get_db(lib)] = None
-        if not for_deps:
+
+    if not for_deps:
+        for lib in libs.traverse():
             hidden_args = cmd_args(hidden = [
                 lib.interfaces.values(),
                 lib.stub_dirs,

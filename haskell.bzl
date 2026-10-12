@@ -119,6 +119,7 @@ load(
     "attr_deps_haskell_link_infos_sans_template_deps",
     "attr_deps_haskell_toolchain_libraries",
     "attr_deps_merged_link_infos",
+    "check_is_worker_execute",
     "compute_source_module_paths",
     "get_artifact_suffix",
     "get_source_prefixes",
@@ -435,6 +436,7 @@ def _mk_artifact_dir(dir_prefix: str, profiled: bool, link_style, subdir: str = 
 
 _WritePackageConfOptions = record(
     for_deps = bool,
+    omit_depends = bool,
     profiling = list[bool],
     link_style = LinkStyle,
     # NB: We only expect to need one `LinkInfo` here, but `map_to_link_infos`
@@ -512,7 +514,13 @@ def _write_package_conf_impl(
     toolchain_deps_args = [cmd_args(id) for id in toolchain_lib_ids]
     project_deps_args = [cmd_args(lib.id) for lib in arg.hlis]
     depends = cmd_args(cmd_args(toolchain_deps_args + project_deps_args, delimiter = ", "), format = "depends: {}")
-    conf.add(depends)
+
+    # A deps conf exists only so a one-shot metadata step's ghc -M can tell
+    # which package exposes an imported module. Without depends GHC accepts it
+    # on its own, so that step needs only its direct dependencies' dbs; with
+    # them it needs the whole closure (see `get_packages_info`).
+    if not arg.omit_depends:
+        conf.add(depends)
 
     if not arg.use_empty_lib:
         if not libname:
@@ -604,7 +612,8 @@ def _make_package(
         use_empty_lib: bool,
         module_sources: dict[str, Artifact],
         extra_lib_info: ExtraLibraryInfo,
-        for_deps: bool = False):
+        for_deps: bool = False,
+        omit_depends: bool = False):
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
 
     if for_deps:
@@ -630,6 +639,7 @@ def _make_package(
 
     arg = _WritePackageConfOptions(
         for_deps = for_deps,
+        omit_depends = omit_depends,
         profiling = profiling,
         link_style = link_style,
         link_infos = link_infos,
@@ -1101,6 +1111,9 @@ def _build_haskell_lib(
         module_sources = compiled.module_sources,
         extra_lib_info = extra_lib_info,
         for_deps = True,
+        # Only the one-shot metadata step reads deps confs as package dbs; a
+        # worker's metadata request resolves packages from its own data.
+        omit_depends = not check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client),
     )
 
     hlib = HaskellLibraryInfo(
