@@ -849,6 +849,7 @@ def _build_haskell_lib(
         enable_profiling: bool,
         enable_haddock: bool,
         md_file: Artifact,
+        dep_md_file: Artifact,
         skeleton: Artifact | None = None,
         # The non-profiling artifacts are also needed to build the package for
         # profiling, so it should be passed when `enable_profiling` is True.
@@ -1126,7 +1127,7 @@ def _build_haskell_lib(
         is_prebuilt = False,
         profiling_enabled = enable_profiling,
         toolchain_dependencies = toolchain_libs_full,
-        md_file = md_file,
+        md_file = dep_md_file,
         skeleton = skeleton,
     )
 
@@ -1214,7 +1215,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             # This is executed for each output style even though the dependency graph is independent of it.
             # The reason for that is that the persistent worker initializes the module graph fully during this request,
             # requiring the linking and profiling settings to be applied.
-            md_file = target_metadata(
+            md_file, dep_md_file = target_metadata(
                 ctx,
                 link_style = link_style,
                 enable_profiling = enable_profiling,
@@ -1240,6 +1241,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 # enable haddock only for the first non-profiling hlib
                 enable_haddock = not enable_profiling and not non_profiling_hlib,
                 md_file = md_file,
+                dep_md_file = dep_md_file,
                 skeleton = skeleton,
                 non_profiling_hlib = non_profiling_hlib.get(link_style),
                 unit_plugin_flags = plugin_flags.unit,
@@ -1710,7 +1712,7 @@ def _haskell_executable(ctx: AnalysisContext) -> HaskellExecutableOutput:
     validate_plugins_attrs(ctx)
     plugin_flags = compute_plugin_flags(ctx, link_style)
 
-    md_file = target_metadata(
+    md_file, _dep_md_file = target_metadata(
         ctx,
         link_style = link_style,
         enable_profiling = enable_profiling,

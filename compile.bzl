@@ -682,7 +682,7 @@ def target_metadata(
         main: None | str,
         is_binary: bool,
         sources: list[Artifact],
-        worker: WorkerInfo | None) -> Artifact:
+        worker: WorkerInfo | None) -> (Artifact, Artifact):
     prof_suffix = "-prof" if enable_profiling else ""
     link_suffix = "-" + link_style.value
     md_file = ctx.actions.declare_output(ctx.label.name + link_suffix + prof_suffix + ".md.json")
@@ -773,7 +773,18 @@ def target_metadata(
         ),
     ))
 
-    return md_file.with_associated_artifacts([src for src in sources if not src.is_source] + worker_files.values())
+    # Two views of one plan. The unit's own compile requests restore the unit
+    # from its dep-units file, so their plan carries it. A dependent's
+    # requests read a dependency's plan and args files but never its
+    # dep-units file (the worker reads only the requesting unit's, which
+    # already lists every transitive plan), and each dep-units file lists its
+    # unit's whole closure, so carrying them for every dependency grows with
+    # the square of the closure: on a 2026-10-12 worker compile, md.json and
+    # dep-units.json files were 3.4 GB of 6.0 GB of inputs.
+    generated_srcs = [src for src in sources if not src.is_source]
+    home_plan = md_file.with_associated_artifacts(generated_srcs + worker_files.values())
+    dep_plan = md_file.with_associated_artifacts(generated_srcs + [f for name, f in worker_files.items() if name != "dep_units"])
+    return (home_plan, dep_plan)
 
 # List of a unit's modules for the persistent worker's metadata calculation.
 def target_skeleton(ctx: AnalysisContext, sources: list[Artifact]) -> Artifact:
