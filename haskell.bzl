@@ -1957,6 +1957,13 @@ def _haskell_module_sub_targets(
             for hie in compiled.hie
             if hie.extension == ".hie"
         })],
+        # Each module's ABI hash. The compile declares these, so a build
+        # produces them, but nothing exposed them: `--materializations=all`
+        # brings down what a target's providers name, and these were named
+        # only by the internal CompileResultInfo. A one-shot run therefore
+        # had none of them on disk among thousands of other outputs, and a
+        # check that joined on them silently compared nothing.
+        "hashes": [DefaultInfo(default_outputs = compiled.hashes)],
     }
 
 #
