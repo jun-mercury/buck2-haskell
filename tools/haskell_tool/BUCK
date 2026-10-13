@@ -1,0 +1,26 @@
+load("@prelude//utils:source_listing.bzl", "source_listing")
+
+oncall("build_infra")
+
+source_listing()
+
+prelude = native
+
+# The two steps one-shot actions wrap around GHC, as one static binary: an
+# action carries one file for them instead of a Python interpreter and its
+# standard library. //tools:ghc_wrapper and //tools:ghc_pkg_registerer run it.
+prelude.go_binary(
+    name = "haskell_tool",
+    srcs = glob(
+        ["*.go"],
+        exclude = ["*_test.go"],
+    ),
+    visibility = ["//tools/..."],
+)
+
+prelude.go_test(
+    name = "haskell_tool_test",
+    srcs = glob(["*_test.go"]),
+    embed_srcs = glob(["testdata/**"]),
+    target_under_test = ":haskell_tool",
+)
