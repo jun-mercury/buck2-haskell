@@ -43,9 +43,8 @@ func TestWrapWritesDepFiles(t *testing.T) {
 	if got, _ := os.ReadFile(dep); string(got) != "\n" {
 		t.Errorf("dep file %q, want an empty line", got)
 	}
-	// Only the last --buck2-package-db survives, as with argparse's store action:
-	// the dep file names one db (fixed in the change after this one).
-	if got, _ := os.ReadFile(dbDep); string(got) != "b\n" {
+	// Every --buck2-package-db goes in the dep file, so buck2 counts each db as used.
+	if got, _ := os.ReadFile(dbDep); string(got) != "a\nb\n" {
 		t.Errorf("packagedb dep file %q", got)
 	}
 }

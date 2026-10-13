@@ -16,6 +16,7 @@
 "status": 0,
 "values": {
 "--buck2-package-db": [
+"a",
 "b"
 ],
 "--ghc": [
@@ -200,6 +201,7 @@
 "status": 0,
 "values": {
 "--buck2-package-db": [
+"a",
 "b"
 ],
 "--ghc": [
@@ -226,6 +228,7 @@
 "status": 0,
 "values": {
 "--buck2-package-db": [
+"b",
 "c"
 ],
 "--ghc": [
@@ -10423,7 +10426,10 @@
 "--abi-from-plugin": [
 "-.5"
 ],
-"--buck2-package-db": [],
+"--buck2-package-db": [
+"-",
+"p"
+],
 "--ghc": [
 "g"
 ],
