@@ -17,7 +17,9 @@ import (
 var wrapOptions = []option{
 	{name: "--buck2-dep", arity: one},
 	{name: "--buck2-packagedb-dep", arity: one},
-	{name: "--buck2-package-db", arity: many},
+	// Repeatable, as compile.bzl passes it once per db: every db goes in the
+	// packagedb dep file, so buck2 counts each one as used.
+	{name: "--buck2-package-db", arity: many, repeated: true},
 	{name: "--ghc", arity: one, required: true},
 	{name: "--ghc-dir", arity: one},
 	{name: "--ghc-argsfile", arity: one},

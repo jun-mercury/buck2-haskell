@@ -4,7 +4,8 @@ Run from the package directory with the CPython that ran ghc_wrapper.py (3.13):
     python3 -I testdata/gen_cases.py > testdata/cases.json
 It also writes the argument files the "@" cases read, under testdata/at/.
 The parsers below are ghc_wrapper.py's and ghc_pkg_registerer.py's (buck2-haskell 74e7e9239c) with type=Path
-left out, since the tool normalises paths after parsing; pathlib and os.path are checked separately.
+left out, since the tool normalises paths after parsing (pathlib and os.path are checked separately), and with
+--buck2-package-db as action="extend": haskell_tool keeps every repeat, so every db reaches the packagedb dep file.
 """
 import argparse, json, os.path, pathlib, random, sys
 
@@ -29,7 +30,7 @@ def wrapper():
     p = Parser(add_help=False, fromfile_prefix_chars="@")
     p.add_argument("--buck2-dep", required=False)
     p.add_argument("--buck2-packagedb-dep", required=False)
-    p.add_argument("--buck2-package-db", required=False, nargs="*", default=[])
+    p.add_argument("--buck2-package-db", required=False, nargs="*", action="extend", default=[])
     p.add_argument("--ghc", required=True, type=str)
     p.add_argument("--ghc-dir", type=str)
     p.add_argument("--ghc-argsfile", required=False, type=str)
