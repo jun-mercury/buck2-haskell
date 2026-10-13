@@ -26,15 +26,17 @@ prelude.python_bootstrap_binary(
     visibility = ["PUBLIC"],
 )
 
-prelude.python_bootstrap_binary(
+prelude.command_alias(
     name = "ghc_wrapper",
-    main = "ghc_wrapper.py",
+    args = ["wrap"],
+    exe = "//tools/haskell_tool:haskell_tool",
     visibility = ["PUBLIC"],
 )
 
-prelude.python_bootstrap_binary(
+prelude.command_alias(
     name = "ghc_pkg_registerer",
-    main = "ghc_pkg_registerer.py",
+    args = ["register"],
+    exe = "//tools/haskell_tool:haskell_tool",
     visibility = ["PUBLIC"],
 )
 

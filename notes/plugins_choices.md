@@ -149,7 +149,7 @@ tools to only the modules that reference them, each module depends only on the
 tools it actually needs. Global plugin tools remain available to all modules
 since they apply to every compilation unit. The per-module tool paths are added
 to `wrapper_args_for_file` (not `compile_args_for_file`) because `--bin-exe=`
-is a `ghc_wrapper.py` flag, not a GHC flag.
+is a `ghc_wrapper` (`haskell_tool wrap`) flag, not a GHC flag.
 
 ### 10. Compiler flags come after plugin opts in GHC invocation
 

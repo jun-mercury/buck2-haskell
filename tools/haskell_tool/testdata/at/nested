@@ -1,0 +1,4 @@
+@testdata/at/plain
+--buck2-package-db
+a
+@testdata/at/dbs
