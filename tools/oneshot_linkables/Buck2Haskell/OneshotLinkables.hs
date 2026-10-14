@@ -67,7 +67,11 @@ import GHC.Driver.Hooks (Hooks (..))
 import GHC.Driver.Pipeline.Execute (runPhase)
 import GHC.Driver.Pipeline.Phases (PhaseHook (..), TPhase (..))
 import GHC.Unit.Module.Location (ModLocation (..))
+#if __GLASGOW_HASKELL__ >= 914
+import GHC.Unit.Module.ModIface (mi_mod_hash)
+#else
 import GHC.Unit.Module.ModIface (mi_final_exts, mi_mod_hash)
+#endif
 import GHC.Unit.Module.Status (HscRecompStatus (..))
 import GHC.Iface.Load (WhereFrom (ImportBySystem), loadInterface, loadSysInterface)
 import qualified GHC.LanguageExtensions as LangExt
@@ -199,7 +203,13 @@ installAbiHashHook hsc_env =
       pure result
 
 writeAbiHash :: FilePath -> ModIface -> IO ()
+-- GHC 9.14 keeps the module hash among the interface's ABI hashes and
+-- exports mi_mod_hash on the ModIface itself; mi_final_exts is gone.
+#if __GLASGOW_HASKELL__ >= 914
+writeAbiHash path iface = writeFile path (show (mi_mod_hash iface))
+#else
 writeAbiHash path iface = writeFile path (show (mi_mod_hash (mi_final_exts iface)))
+#endif
 
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER
 linkables :: HscEnv -> LoaderState -> IO Linkables
