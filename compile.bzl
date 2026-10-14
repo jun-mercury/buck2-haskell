@@ -458,7 +458,8 @@ def unit_ghc_args(actions: AnalysisActions, arg: UnitParams) -> cmd_args:
 
     _add_dynamic_too_if_required(arg.is_worker_execute, arg.link_style, args)
 
-    args.add("-fbyte-code-and-object-code")
+    # Probe only (hs-worker-iii, 2026-10-14): no Core in interfaces, to find
+    # which compiles need it and what it costs. Not for a pin.
 
     osuf, hisuf = output_extensions(arg.link_style, arg.enable_profiling)
     args.add("-osuf", osuf, "-hisuf", hisuf)
