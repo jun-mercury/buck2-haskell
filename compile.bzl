@@ -2079,7 +2079,8 @@ def _compile_incr(
             module_plugin_flags = arg.srcs_plugin_flags.get(module.source),
             module_plugin_tool_paths = arg.srcs_plugin_tool_paths.get(module.source),
             oneshot_linkables = cmd_args(arg.oneshot_linkables, "-fplugin-opt=Buck2Haskell.OneshotLinkables:no-th-closure") if arg.oneshot_linkables != None and module_name in arg.oneshot_th_closure_exclude else arg.oneshot_linkables,
-            oneshot_preload = None if module_name in arg.oneshot_preload_exclude else arg.oneshot_preload,
+            # Probe only (hs-worker-iii, 2026-10-14): no plugin on compiles without splices, to measure its cost.
+            oneshot_preload = None,
         )
 
 def compile_args_for_non_incr(
