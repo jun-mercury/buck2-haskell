@@ -1341,7 +1341,7 @@ def _common_compile_module_args(
             packagedb_args.add(cmd_args(lg.db))
 
         # Probe only (hs-worker-iii, 2026-10-15): the first-party dbs above merged into one, to measure what a
-        # compile spends on a stack of one db per unit. ${pkgroot} in each conf becomes its db's own path, so
+        # compile spends on a stack of one db per unit. ${pkgroot} in each conf becomes its db's parent directory (GHC's meaning), so
         # the merged confs still name the interface directories they named before. Not for a pin.
         first_party_dbs = packagedb_args
         merged_db = actions.declare_output("merged-package-db-{}".format(arg.link_style.value), dir = True)
@@ -1349,7 +1349,7 @@ def _common_compile_module_args(
             cmd_args(
                 "sh",
                 "-c",
-                'out=$1; shift; mkdir -p "$out"; while [ "$1" != "--" ]; do for c in "$1"/*.conf; do [ -e "$c" ] || continue; sed "s|\\${pkgroot}|$1|g" "$c" > "$out/$(basename "$c")"; done; shift; done; shift; exec "$@" --package-db "$out" recache',
+                'out=$1; shift; mkdir -p "$out"; while [ "$1" != "--" ]; do root=$(dirname "$1"); for c in "$1"/*.conf; do [ -e "$c" ] || continue; sed "s|\\${pkgroot}|$root|g" "$c" > "$out/$(basename "$c")"; done; shift; done; shift; exec "$@" --package-db "$out" recache',
                 "--",
                 merged_db.as_output(),
                 first_party_dbs,
