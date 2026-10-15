@@ -1344,6 +1344,8 @@ def _common_compile_module_args(
         # compile spends on a stack of one db per unit. ${pkgroot} in each conf becomes its db's parent directory (GHC's meaning), so
         # the merged confs still name the interface directories they named before. Not for a pin.
         first_party_dbs = packagedb_args
+        # merge-all variant: the toolchain's package-set dbs go into the same merged db.
+        first_party_dbs.add(toolchain_package_db_tset.project_as_args("toolchain_package_db"))
         merged_db = actions.declare_output("merged-package-db-{}".format(arg.link_style.value), dir = True)
         actions.run(
             cmd_args(
@@ -1360,8 +1362,6 @@ def _common_compile_module_args(
             identifier = arg.link_style.value,
         )
         packagedb_args = cmd_args(merged_db, hidden = first_party_dbs)
-
-        packagedb_args.add(toolchain_package_db_tset.project_as_args("toolchain_package_db"))
 
         package_env_file = make_package_env(
             actions = actions,
