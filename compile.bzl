@@ -1340,6 +1340,27 @@ def _common_compile_module_args(
         for lg in arg.link_group_libs:
             packagedb_args.add(cmd_args(lg.db))
 
+        # Probe only (hs-worker-iii, 2026-10-15): the first-party dbs above merged into one, to measure what a
+        # compile spends on a stack of one db per unit. ${pkgroot} in each conf becomes its db's own path, so
+        # the merged confs still name the interface directories they named before. Not for a pin.
+        first_party_dbs = packagedb_args
+        merged_db = actions.declare_output("merged-package-db-{}".format(arg.link_style.value), dir = True)
+        actions.run(
+            cmd_args(
+                "sh",
+                "-c",
+                'out=$1; shift; mkdir -p "$out"; while [ "$1" != "--" ]; do for c in "$1"/*.conf; do [ -e "$c" ] || continue; sed "s|\\${pkgroot}|$1|g" "$c" > "$out/$(basename "$c")"; done; shift; done; shift; exec "$@" --package-db "$out" recache',
+                "--",
+                merged_db.as_output(),
+                first_party_dbs,
+                "--",
+                arg.haskell_toolchain.packager,
+            ),
+            category = "haskell_merge_package_db",
+            identifier = arg.link_style.value,
+        )
+        packagedb_args = cmd_args(merged_db, hidden = first_party_dbs)
+
         packagedb_args.add(toolchain_package_db_tset.project_as_args("toolchain_package_db"))
 
         package_env_file = make_package_env(
