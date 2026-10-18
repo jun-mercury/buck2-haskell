@@ -103,6 +103,8 @@ import GHC.Unit.Env (HomeUnitEnv (..))
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER
 import Control.Applicative ((<|>))
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import System.IO.Unsafe (unsafePerformIO)
 import GHC.Driver.Env (hscInterp)
 import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
 import GHC.Iface.Errors.Types (MissingInterfaceError)
@@ -256,15 +258,32 @@ writeReadInterfaces hsc_env =
     Nothing -> pure ()
     Just out -> do
       eps <- hscEPS hsc_env
-      paths <- traverse locate (filter ((/= gHC_PRIM) . fst) (moduleEnvToList (eps_PIT eps)))
-      writeFile out (unlines (concat paths))
+      readLines <- traverse (\(m, iface) -> locate "read" m (ModIface.mi_boot iface)) (filter ((/= gHC_PRIM) . fst) (moduleEnvToList (eps_PIT eps)))
+      linked <- linkedLines
+      writeFile out (unlines (concat readLines ++ linked))
   where
-    locate (m, iface) = do
+    locate kind m isBoot = do
       let installed = mkModule (toUnitId (moduleUnit m)) (moduleName m)
-      found <- findInstalled installed (ModIface.mi_boot iface)
+      found <- findInstalled installed isBoot
       pure $ case found of
-        Just loc -> concatMap (withBoot (ModIface.mi_boot iface)) [ml_hi_file loc, ml_dyn_hi_file loc]
+        Just loc -> map ((kind ++ "\t") ++) (concatMap (withBoot isBoot) [ml_hi_file loc, ml_dyn_hi_file loc])
         Nothing -> []
+
+    -- A splice runs the byte code in the interfaces of the modules it links,
+    -- which a body-only edit changes while their ABI hashes stay put, so the
+    -- wrapper names those interfaces themselves. "linker" says this plugin
+    -- resolved the links, so the list is whole; without the resolver GHC's
+    -- own does the linking and the list is empty, and the wrapper refuses to
+    -- tag a splice-running compile's interfaces on it.
+    linkedLines :: IO [String]
+#ifdef BUCK2_HASKELL_ONESHOT_LINKER
+    linkedLines = do
+      mods <- readIORef linkedModules
+      paths <- traverse (\m -> locate "linked" m NotBoot) mods
+      pure ("linker" : concat paths)
+#else
+    linkedLines = pure []
+#endif
 
     withBoot IsBoot path = [path, path ++ "-boot"]
     withBoot NotBoot path = [path]
@@ -302,8 +321,18 @@ linkables hsc_env pls =
 
     resolve :: SrcSpan -> [Module] -> IO ([Linkable], [LinkModule], UniqDSet UnitId, [UnitId])
     resolve span mods
-      | ldOneShotMode opts = classifyDeps pls <$> oneshotDeps opts mods
+      | ldOneShotMode opts = do
+          deps <- oneshotDeps opts mods
+          modifyIORef' linkedModules (++ [linkModule lm | LinkModules ms <- deps, lm <- eltsUDFM ms])
+          pure (classifyDeps pls deps)
       | otherwise = resolveLinkDeps opts pls span mods
+
+-- | Every module whose code a splice in this compile linked, byte code or
+-- object, for 'writeReadInterfaces'. One GHC process compiles one module in
+-- one-shot mode, so a process-wide list is that module's.
+{-# NOINLINE linkedModules #-}
+linkedModules :: IORef [Module]
+linkedModules = unsafePerformIO (newIORef [])
 #endif
 
 loadInterfaces :: [CommandLineOption] -> ModSummary -> Hsc ()

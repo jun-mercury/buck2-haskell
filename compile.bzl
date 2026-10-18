@@ -1633,6 +1633,10 @@ def _compile_module(
 
     abi_hash_inputs = dependency_modules.project_as_args("abi")
 
+    # Whether a splice-running compile's dependency interfaces are tagged:
+    # only when the oneshot plugin lists the modules its splices linked.
+    splice_interfaces_tagged = False
+
     # ----------------------------------------------------------------------------------------------------
 
     # These arguments for `ghc_wrapper`/the worker can be passed in a response file.
@@ -1733,10 +1737,13 @@ def _compile_module(
             # names their hash files in the dep file, so the dependency
             # modules' hashes are tagged as the worker's are: a compile reruns
             # when a module it read changes its ABI, not when any module below
-            # it does. A splice-running compile still keys on its
-            # dependencies' whole interfaces, untagged, below.
-            wrapper_args_for_file.add("--read-interfaces-dep", "true")
+            # it does. For a compile that runs splices it lists the modules
+            # whose code the splices linked as well, and the wrapper names
+            # their interfaces, whose byte code a body-only edit changes, so
+            # that compile's dependency interfaces are tagged too.
+            wrapper_args_for_file.add("--read-interfaces-dep", "splices" if enable_th else "true")
             abi_hash_inputs = abi_tag.tag_artifacts(abi_hash_inputs)
+            splice_interfaces_tagged = enable_th
         else:
             wrapper_args_for_file.add("--abi-out", outputs.outputs[module.hash])
 
@@ -1806,10 +1813,11 @@ def _compile_module(
                 # A module that runs splices keys on its dependencies'
                 # interfaces whole: with -fprefer-byte-code the code a splice
                 # runs is the byte code in those interfaces, which a body-only
-                # edit changes while the ABI hash, and so the dep file, does
-                # not. Tagged, such an edit was served stale from dep-file
-                # state.
-                dependency_modules.project_as_args("interfaces") if enable_th else abi_tag.tag_artifacts(dependency_modules.project_as_args("interfaces")),
+                # edit changes while the ABI hash does not. Tagged with a dep
+                # file that did not name them, such an edit was served stale
+                # from dep-file state. The oneshot plugin's list names them, so
+                # with it they are tagged.
+                dependency_modules.project_as_args("interfaces") if enable_th and not splice_interfaces_tagged else abi_tag.tag_artifacts(dependency_modules.project_as_args("interfaces")),
                 abi_tag.tag_artifacts(common_args.dep_unit_plans),
                 abi_hash_inputs,
             ] + hidden_toolchain_deps,

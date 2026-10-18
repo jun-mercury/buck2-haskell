@@ -104,12 +104,13 @@ func TestWrapWritesTheHashesOfTheInterfacesRead(t *testing.T) {
 		}
 	}
 	t.Setenv("HASKELL_TOOL_FAKE_GHC", "1")
-	t.Setenv("HASKELL_TOOL_FAKE_GHC_READ", "dep/db/../mod-shared/B/C.dyn_hi\n"+
-		"/nix/store/x-ghc/lib/base/Prelude.dyn_hi\n"+
-		filepath.Join(dir, "out/A.dyn_hi")+"\n"+
-		"out/A.hi\nout/A.dyn_hi\n"+
-		"out/D.dyn_hi\nout/D.dyn_hi-boot\n"+
-		"out/E.dyn_hi\n")
+	t.Setenv("HASKELL_TOOL_FAKE_GHC_READ", "read\tdep/db/../mod-shared/B/C.dyn_hi\n"+
+		"read\t/nix/store/x-ghc/lib/base/Prelude.dyn_hi\n"+
+		"read\t"+filepath.Join(dir, "out/A.dyn_hi")+"\n"+
+		"read\tout/A.hi\nread\tout/A.dyn_hi\n"+
+		"read\tout/D.dyn_hi\nread\tout/D.dyn_hi-boot\n"+
+		"read\tout/E.dyn_hi\n"+
+		"linked\tout/A.dyn_hi\n")
 	code := wrap([]string{
 		"--ghc", fakeGhc(t),
 		"--buck2-dep", "x.dep",
@@ -142,5 +143,54 @@ func TestWrapStopsWhenThePluginListedNothing(t *testing.T) {
 	}
 	if _, err := os.Stat("x.dep"); err == nil {
 		t.Errorf("dep file written without the plugin's list")
+	}
+}
+
+// A splice-running compile also names the interface of every module a splice
+// linked, since a body-only edit changes the byte code in it and not the hash.
+func TestWrapNamesTheInterfacesASpliceLinked(t *testing.T) {
+	dir := t.TempDir()
+	inDir(t, dir)
+	for _, f := range []string{"out/A.dyn_hi", "out/A.dyn_hi.hash", "out/B.dyn_hi", "out/B.dyn_hi.hash"} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("h"), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HASKELL_TOOL_FAKE_GHC", "1")
+	t.Setenv("HASKELL_TOOL_FAKE_GHC_READ", "read\tout/A.dyn_hi\nread\tout/B.dyn_hi\nlinker\nlinked\tout/B.dyn_hi\n")
+	code := wrap([]string{
+		"--ghc", fakeGhc(t),
+		"--buck2-dep", "x.dep",
+		"--read-interfaces-dep", "splices",
+		"-c", "X.hs",
+	})
+	if code != 0 {
+		t.Fatalf("wrap exited %d", code)
+	}
+	want := "out/A.dyn_hi.hash\nout/B.dyn_hi\nout/B.dyn_hi.hash\n"
+	if got, _ := os.ReadFile("x.dep"); string(got) != want {
+		t.Errorf("dep file %q, want %q", got, want)
+	}
+}
+
+// Without the plugin's resolver nothing recorded what the splices linked, so a
+// splice-running compile that asked for the list fails instead of keying on
+// the hashes alone.
+func TestWrapStopsWhenNoResolverRecordedTheSplices(t *testing.T) {
+	dir := t.TempDir()
+	inDir(t, dir)
+	t.Setenv("HASKELL_TOOL_FAKE_GHC", "1")
+	t.Setenv("HASKELL_TOOL_FAKE_GHC_READ", "read\tout/A.dyn_hi\n")
+	code := wrap([]string{
+		"--ghc", fakeGhc(t),
+		"--buck2-dep", "x.dep",
+		"--read-interfaces-dep", "splices",
+		"-c", "X.hs",
+	})
+	if code != 1 {
+		t.Errorf("wrap exited %d, want 1 without the linker mark", code)
 	}
 }
