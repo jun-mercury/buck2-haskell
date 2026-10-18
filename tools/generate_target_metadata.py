@@ -331,16 +331,23 @@ def run_ghc_depends(
             # Note: `-outputdir '.'` removes the prefix of all targets:
             #       backend/src/Foo/Util.<ext> => Foo/Util.<ext>
             "-outputdir", ".",
-            "-dep-json", json_fname,
-            "-dep-makefile", make_fname,
         ] + worker_args + ghc_args + haskell_sources + haskell_boot_sources
 
+        # The args file is a declared output of the action, so it must not
+        # name the temporary directory: a path that changes on every run
+        # makes the action's outputs differ when its inputs did not, and
+        # buck2 then re-runs every dynamic action that reads the metadata.
         with open(ghc_args_file_at, "w", encoding="utf-8") as args_file:
             for arg in args:
                 args_file.write(arg)
                 args_file.write("\n")
 
-        args_outer = [str(ghc.absolute()), "@" + os.path.abspath(ghc_args_file_at)]
+        args_outer = [
+            str(ghc.absolute()),
+            "@" + os.path.abspath(ghc_args_file_at),
+            "-dep-json", json_fname,
+            "-dep-makefile", make_fname,
+        ]
 
         env = os.environ.copy()
         path = env.get("PATH", "")
