@@ -1,16 +1,22 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // The test binary stands in for GHC when HASKELL_TOOL_FAKE_GHC is set, so
 // wrap runs a real child process without a compiler on the machine.
 func TestMain(m *testing.M) {
-	if os.Getenv("HASKELL_TOOL_FAKE_GHC") == "1" {
+	switch os.Getenv("HASKELL_TOOL_FAKE_GHC") {
+	case "1":
 		os.Exit(0)
+	case "fail":
+		os.Stderr.WriteString("X.hs:1:1: error\n")
+		os.Exit(3)
 	}
 	os.Exit(m.Run())
 }
@@ -64,5 +70,27 @@ func TestWrapStopsWhenThePluginWroteNoHash(t *testing.T) {
 	}
 	if _, err := os.Stat(dep); err == nil {
 		t.Errorf("dep file written although the ABI hash check failed")
+	}
+}
+
+func TestWrapNamesTheFailedCommand(t *testing.T) {
+	t.Setenv("HASKELL_TOOL_FAKE_GHC", "fail")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = w
+	code := wrap([]string{"--ghc", fakeGhc(t), "-c", "X Y.hs"})
+	os.Stderr = stderr
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if code != 3 {
+		t.Errorf("wrap exited %d, want GHC's 3", code)
+	}
+	for _, want := range []string{"X.hs:1:1: error", fakeGhc(t) + " -c 'X Y.hs'", "exit status 3"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("stderr %q lacks %q", out, want)
+		}
 	}
 }

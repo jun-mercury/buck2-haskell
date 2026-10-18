@@ -232,19 +232,35 @@ func run(argv, env []string, stdout *os.File) int {
 	cmd.Stdout = stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
-	var exit *exec.ExitError
-	switch {
-	case err == nil:
+	if err == nil {
 		return 0
-	case errors.As(err, &exit):
-		if code := exit.ExitCode(); code >= 0 {
-			return code
-		}
-		return exitCodeOfSignal(exit)
-	default:
+	}
+	// The child's stderr is already ours, but a child killed by a signal, or
+	// one that exits non-zero in silence, leaves the action with no reason.
+	fmt.Fprintln(os.Stderr, shellJoin(argv))
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	fmt.Fprintf(os.Stderr, "%s: %s\n", argv[0], exit)
+	if code := exit.ExitCode(); code >= 0 {
+		return code
+	}
+	return exitCodeOfSignal(exit)
+}
+
+// shellJoin is shlex.join: argv quoted so it can be pasted into a shell.
+func shellJoin(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		if a != "" && strings.Trim(a, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./-_") == "" {
+			quoted[i] = a
+		} else {
+			quoted[i] = "'" + strings.ReplaceAll(a, "'", `'"'"'`) + "'"
+		}
+	}
+	return strings.Join(quoted, " ")
 }
 
 // pythonPath is str(pathlib.PurePosixPath(p)): repeated slashes and "."
