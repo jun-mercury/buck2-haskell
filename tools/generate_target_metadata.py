@@ -355,8 +355,16 @@ def run_ghc_depends(
 
         res = subprocess.run(args_outer, env=env, cwd=cwd, capture_output=True)
         if res.returncode != 0:
-            # Write the GHC command on failure.
+            # Write the GHC command on failure, with the args file's contents:
+            # buck2 does not download a failed remote action's outputs, so the
+            # file itself is out of reach.
             print(shlex.join(args_outer), file=sys.stderr)
+            print(f"contents of {ghc_args_file_at}:", file=sys.stderr)
+            print(shlex.join(args), file=sys.stderr)
+            if res.returncode < 0:
+                print(f"ghc was killed by signal {-res.returncode}", file=sys.stderr)
+            else:
+                print(f"ghc exited with status {res.returncode}", file=sys.stderr)
 
         # Always forward stdout/stderr.
         # Note, Buck2 swallows stdout on successful builds.
