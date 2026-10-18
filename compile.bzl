@@ -236,6 +236,8 @@ _DynamicDoCompileOptions = record(
     # GHC flags that load the oneshot linkables plugin, if `haskell.oneshot_linkables` is set:
     # as a package for a compile with splices, as a bare library for one without.
     oneshot_linkables = field(cmd_args | None, default = None),
+    # Whether that plugin was built with the oneshot linker resolver.
+    oneshot_linker = field(bool, default = False),
     oneshot_preload = field(cmd_args | None, default = None),
     # Modules compiled without `oneshot_preload`: see the
     # `oneshot_preload_exclude` attribute.
@@ -1584,7 +1586,8 @@ def _compile_module(
         module_plugin_flags: cmd_args | None = None,
         module_plugin_tool_paths: typing.Any = None,
         oneshot_linkables: cmd_args | None = None,
-        oneshot_preload: cmd_args | None = None) -> CompiledModuleTSet:
+        oneshot_preload: cmd_args | None = None,
+        oneshot_linker: bool = False) -> CompiledModuleTSet:
     is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
 
     abi_tag = actions.artifact_tag()
@@ -1741,9 +1744,17 @@ def _compile_module(
             # whose code the splices linked as well, and the wrapper names
             # their interfaces, whose byte code a body-only edit changes, so
             # that compile's dependency interfaces are tagged too.
-            wrapper_args_for_file.add("--read-interfaces-dep", "splices" if enable_th else "true")
+            #
+            # Only the plugin's linker resolver records what a splice linked.
+            # Without it (`oneshot_linker` off, as on GHC 9.14) a
+            # splice-running compile keeps its dependency interfaces untagged
+            # and whole, as before, and lists only the hashes it read: asking
+            # for splice mode there would fail every such compile on the
+            # missing linker mark.
+            splice_tagging = enable_th and oneshot_linker
+            wrapper_args_for_file.add("--read-interfaces-dep", "splices" if splice_tagging else "true")
             abi_hash_inputs = abi_tag.tag_artifacts(abi_hash_inputs)
-            splice_interfaces_tagged = enable_th
+            splice_interfaces_tagged = splice_tagging
         else:
             wrapper_args_for_file.add("--abi-out", outputs.outputs[module.hash])
 
@@ -2108,6 +2119,7 @@ def _compile_incr(
             module_plugin_tool_paths = arg.srcs_plugin_tool_paths.get(module.source),
             oneshot_linkables = cmd_args(arg.oneshot_linkables, "-fplugin-opt=Buck2Haskell.OneshotLinkables:no-th-closure") if arg.oneshot_linkables != None and module_name in arg.oneshot_th_closure_exclude else arg.oneshot_linkables,
             oneshot_preload = None if module_name in arg.oneshot_preload_exclude else arg.oneshot_preload,
+            oneshot_linker = arg.oneshot_linker,
         )
 
 def compile_args_for_non_incr(
@@ -2481,6 +2493,10 @@ _dynamic_do_compile = dynamic_actions(
 )
 
 # Compile all the context's sources.
+def _oneshot_linker(ctx: AnalysisContext) -> bool:
+    plugin = getattr(ctx.attrs, "_oneshot_linkables", None)
+    return plugin[OneshotLinkablesInfo].linker if plugin else False
+
 def _oneshot_linkables_args(ctx: AnalysisContext) -> cmd_args | None:
     plugin = getattr(ctx.attrs, "_oneshot_linkables", None)
     return plugin[OneshotLinkablesInfo].ghc_args if plugin else None
@@ -2640,6 +2656,7 @@ def compile(
             srcs_plugin_tool_paths = srcs_plugin_tool_paths,
             plugin_toolchain_deps = plugin_toolchain_deps,
             oneshot_linkables = _oneshot_linkables_args(ctx),
+            oneshot_linker = _oneshot_linker(ctx),
             oneshot_preload = _oneshot_preload_args(ctx),
             oneshot_preload_exclude = getattr(ctx.attrs, "oneshot_preload_exclude", []),
             oneshot_th_closure_exclude = getattr(ctx.attrs, "oneshot_th_closure_exclude", []),

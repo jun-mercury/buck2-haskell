@@ -12,6 +12,9 @@ load(":toolchain.bzl", "HaskellToolchainInfo", "haskell_toolchain")
 OneshotLinkablesInfo = provider(fields = {
     "ghc_args": provider_field(cmd_args),
     "preload_args": provider_field(cmd_args),
+    # Whether the plugin installs the oneshot linker resolver, and so records
+    # the modules a splice links; see `--read-interfaces-dep` in compile.bzl.
+    "linker": provider_field(bool, default = False),
 })
 
 def _oneshot_linkables_impl(ctx: AnalysisContext) -> list[Provider]:
@@ -44,7 +47,7 @@ def _oneshot_linkables_impl(ctx: AnalysisContext) -> list[Provider]:
         ), preload_args = cmd_args(
             out,
             format = "-fplugin-library={}/plugin.so;buck2-haskell-oneshot-linkables;Buck2Haskell.OneshotLinkables;[]",
-        )),
+        ), linker = linker),
     ]
 
 haskell_oneshot_linkables = rule(
