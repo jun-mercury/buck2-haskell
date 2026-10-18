@@ -98,7 +98,11 @@ def run_ghc_pkg(ghc_pkg, cmd, pkgdb=None, args=[]):
     res = subprocess.run(outer_args, capture_output=True)
 
     if res.returncode != 0:
-        print(shlex.join(args), file=sys.stderr)
+        # ghc-pkg's own output is the diagnosis; printing only our arguments
+        # left a failed action with no reason in its stderr.
+        print(shlex.join(outer_args), file=sys.stderr)
+        sys.stderr.write(res.stderr.decode("utf-8", "replace"))
+        sys.stderr.write(res.stdout.decode("utf-8", "replace"))
 
     if res.returncode != 0:
         # Fail if ghc-pkg failed.
