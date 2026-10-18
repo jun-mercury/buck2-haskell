@@ -101,11 +101,12 @@ def run_ghc_pkg(ghc_pkg, cmd, pkgdb=None, args=[]):
         # ghc-pkg's own output is the diagnosis; printing only our arguments
         # left a failed action with no reason in its stderr.
         print(shlex.join(outer_args), file=sys.stderr)
+        if res.returncode < 0:
+            print(f"ghc-pkg was killed by signal {-res.returncode}", file=sys.stderr)
+        else:
+            print(f"ghc-pkg exited with status {res.returncode}", file=sys.stderr)
         sys.stderr.write(res.stderr.decode("utf-8", "replace"))
         sys.stderr.write(res.stdout.decode("utf-8", "replace"))
-
-    if res.returncode != 0:
-        # Fail if ghc-pkg failed.
         sys.exit(res.returncode)
 
     return res.stdout.decode("utf-8")
