@@ -27,6 +27,8 @@ var wrapOptions = []option{
 	{name: "--abi-from-plugin", arity: one},
 	// "true" when the oneshot plugin is loaded: the dep file then names the
 	// hash files of the interfaces the compile read, which the plugin lists.
+	// "splices" for a compile that runs splices: the dep file also names the
+	// interfaces of the modules its splices linked.
 	// The name shares no prefix with the other options, so every
 	// abbreviation argparse accepted before still parses the same.
 	{name: "--read-interfaces-dep", arity: one},
@@ -73,7 +75,8 @@ func wrap(args []string) int {
 	}
 
 	readList := ""
-	if v, ok := p.last("--read-interfaces-dep"); ok && v == "true" {
+	readMode, _ := p.last("--read-interfaces-dep")
+	if readMode == "true" || readMode == "splices" {
 		dir, err := os.MkdirTemp("", "haskell-tool-")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -108,7 +111,7 @@ func wrap(args []string) int {
 		content := "\n"
 		if readList != "" {
 			var err error
-			if content, err = hashDepFile(readList); err != nil {
+			if content, err = hashDepFile(readList, readMode == "splices"); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return 1
 			}
@@ -138,14 +141,18 @@ func wrap(args []string) int {
 // it read in; Buck2Haskell.OneshotLinkables reads the same variable.
 const readInterfacesVar = "BUCK2_HASKELL_READ_INTERFACES"
 
-// hashDepFile turns the plugin's list of interfaces into the dep file: the
-// hash file beside each interface, as a path under the working directory,
-// for the ones the action has. buck2 tagged every dependency module's hash,
-// so a hash left out is one whose change does not rerun this compile, and a
-// list the plugin never wrote fails the action rather than keying it on
-// nothing. Interfaces outside the working directory are the toolchain's
-// packages, whose files buck2 does not tag.
-func hashDepFile(list string) (string, error) {
+// hashDepFile turns the plugin's list of interfaces into the dep file, as
+// paths under the working directory that the action has: the hash file
+// beside each interface GHC read ("read"), and for a compile that runs
+// splices the interface of each module a splice linked ("linked"), whose byte
+// code a body-only edit changes under an unchanged hash. buck2 tagged every
+// dependency module's hash, and a splice-running compile's interfaces, so a
+// file left out is one whose change does not rerun this compile. A list the
+// plugin never wrote, or for splices one without the plugin's "linker" mark
+// (GHC's own resolver linked, unrecorded), fails the action rather than
+// keying it on too little. Interfaces outside the working directory are the
+// toolchain's packages, whose files buck2 does not tag.
+func hashDepFile(list string, splices bool) (string, error) {
 	data, err := os.ReadFile(list)
 	if err != nil {
 		return "", fmt.Errorf("the oneshot plugin wrote no list of the interfaces it read: %w", err)
@@ -156,11 +163,29 @@ func hashDepFile(list string) (string, error) {
 	}
 	seen := map[string]bool{}
 	var out []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if line == "" {
-			continue
+	add := func(p string) {
+		if seen[p] {
+			return
 		}
-		p := path.Clean(line)
+		seen[p] = true
+		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+			out = append(out, p)
+		}
+	}
+	linker := false
+	for _, line := range strings.Split(string(data), "\n") {
+		kind, file, _ := strings.Cut(line, "\t")
+		switch kind {
+		case "":
+			continue
+		case "linker":
+			linker = true
+			continue
+		case "read", "linked":
+		default:
+			return "", fmt.Errorf("the oneshot plugin's list has a line of unknown kind: %q", line)
+		}
+		p := path.Clean(file)
 		if path.IsAbs(p) {
 			rel, ok := strings.CutPrefix(p, path.Clean(cwd)+"/")
 			if !ok {
@@ -168,17 +193,16 @@ func hashDepFile(list string) (string, error) {
 			}
 			p = rel
 		}
-		if p == ".." || strings.HasPrefix(p, "../") {
+		if p == "." || p == ".." || strings.HasPrefix(p, "../") {
 			continue
 		}
-		hash := p + ".hash"
-		if seen[hash] {
-			continue
+		add(p + ".hash")
+		if kind == "linked" && splices {
+			add(p)
 		}
-		seen[hash] = true
-		if info, err := os.Stat(hash); err == nil && info.Mode().IsRegular() {
-			out = append(out, hash)
-		}
+	}
+	if splices && !linker {
+		return "", errors.New("the oneshot plugin did not resolve this compile's splices, so it cannot list the interfaces they linked")
 	}
 	if len(out) == 0 {
 		return "\n", nil
