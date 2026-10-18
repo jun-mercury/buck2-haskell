@@ -8,11 +8,32 @@ import (
 	"testing"
 )
 
+// inDir runs the rest of a test from dir, as buck2 runs an action from its
+// execution root, and restores the working directory afterwards.
+func inDir(t *testing.T, dir string) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(old) })
+}
+
 // The test binary stands in for GHC when HASKELL_TOOL_FAKE_GHC is set, so
 // wrap runs a real child process without a compiler on the machine.
 func TestMain(m *testing.M) {
 	switch os.Getenv("HASKELL_TOOL_FAKE_GHC") {
 	case "1":
+		// Stands in for the oneshot plugin's list of the interfaces read.
+		if list, ok := os.LookupEnv(readInterfacesVar); ok {
+			if read, ok := os.LookupEnv("HASKELL_TOOL_FAKE_GHC_READ"); ok {
+				if err := os.WriteFile(list, []byte(read), 0o666); err != nil {
+					os.Exit(2)
+				}
+			}
+		}
 		os.Exit(0)
 	case "fail":
 		os.Stderr.WriteString("X.hs:1:1: error\n")
@@ -92,5 +113,62 @@ func TestWrapNamesTheFailedCommand(t *testing.T) {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("stderr %q lacks %q", out, want)
 		}
+	}
+}
+
+// With the plugin's list, the dep file names the hash beside each interface the
+// compile read that the action has: relative, cleaned, once, and sorted. A
+// toolchain interface outside the working directory and an interface with no
+// hash beside it (a module buck2 did not tag) are left out.
+func TestWrapWritesTheHashesOfTheInterfacesRead(t *testing.T) {
+	dir := t.TempDir()
+	inDir(t, dir)
+	for _, f := range []string{"out/A.dyn_hi.hash", "dep/mod-shared/B/C.dyn_hi.hash", "out/D.dyn_hi-boot.hash"} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("h"), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HASKELL_TOOL_FAKE_GHC", "1")
+	t.Setenv("HASKELL_TOOL_FAKE_GHC_READ", "dep/db/../mod-shared/B/C.dyn_hi\n"+
+		"/nix/store/x-ghc/lib/base/Prelude.dyn_hi\n"+
+		filepath.Join(dir, "out/A.dyn_hi")+"\n"+
+		"out/A.hi\nout/A.dyn_hi\n"+
+		"out/D.dyn_hi\nout/D.dyn_hi-boot\n"+
+		"out/E.dyn_hi\n")
+	code := wrap([]string{
+		"--ghc", fakeGhc(t),
+		"--buck2-dep", "x.dep",
+		"--read-interfaces-dep", "true",
+		"-c", "X.hs",
+	})
+	if code != 0 {
+		t.Fatalf("wrap exited %d", code)
+	}
+	want := "dep/mod-shared/B/C.dyn_hi.hash\nout/A.dyn_hi.hash\nout/D.dyn_hi-boot.hash\n"
+	if got, _ := os.ReadFile("x.dep"); string(got) != want {
+		t.Errorf("dep file %q, want %q", got, want)
+	}
+}
+
+// A compile that asked for the plugin's list and got none fails: an empty dep
+// file would count every tagged hash as unused and serve a stale compile.
+func TestWrapStopsWhenThePluginListedNothing(t *testing.T) {
+	dir := t.TempDir()
+	inDir(t, dir)
+	t.Setenv("HASKELL_TOOL_FAKE_GHC", "1")
+	code := wrap([]string{
+		"--ghc", fakeGhc(t),
+		"--buck2-dep", "x.dep",
+		"--read-interfaces-dep", "true",
+		"-c", "X.hs",
+	})
+	if code != 1 {
+		t.Errorf("wrap exited %d, want 1 for a list the plugin never wrote", code)
+	}
+	if _, err := os.Stat("x.dep"); err == nil {
+		t.Errorf("dep file written without the plugin's list")
 	}
 }
