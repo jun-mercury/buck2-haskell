@@ -85,6 +85,15 @@ def _project_as_package_db(lib: HaskellLibraryInfo) -> cmd_args:
 def _project_as_empty_package_db(lib: HaskellLibraryInfo) -> cmd_args:
     return cmd_args(lib.empty_db) if lib.empty_db != None else cmd_args()
 
+# A compile names each db by its directory, but GHC opens only the
+# `package.cache` in it: never the `.conf` the registerer copied there, and on
+# POSIX not the `package.cache.lock` either, which a read-only open does not
+# take (GHC.Unit.Database.decodeFromFile). Declaring the cache alone keeps the
+# directory in the execution root and drops two unread files per db from every
+# compile's inputs.
+def _project_as_empty_package_cache(lib: HaskellLibraryInfo) -> cmd_args:
+    return cmd_args(lib.empty_db.project("package.cache")) if lib.empty_db != None else cmd_args()
+
 def _project_as_deps_package_db(lib: HaskellLibraryInfo) -> cmd_args:
     return cmd_args(lib.deps_db) if lib.deps_db != None else cmd_args()
 
@@ -124,6 +133,7 @@ HaskellLibraryInfoTSet = transitive_set(
     args_projections = {
         "package_db": _project_as_package_db,
         "empty_package_db": _project_as_empty_package_db,
+        "empty_package_cache": _project_as_empty_package_cache,
         "deps_package_db": _project_as_deps_package_db,
         "libs": _project_as_libs,
         "interfaces": _project_as_interfaces,
