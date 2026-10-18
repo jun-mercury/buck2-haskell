@@ -9,6 +9,7 @@ the library is dynamic and links against the compiler's own `ghc` unit.
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,15 @@ PACKAGES = ["base", "containers", "ghc", "ghc-boot", "transformers"]
 def run(cmd, **kwargs):
     res = subprocess.run(cmd, stderr=sys.stderr.buffer, **kwargs)
     if res.returncode != 0:
+        # The tool's stderr has already gone to ours, but not which of the
+        # steps failed, how, or the stdout captured for parsing.
+        print(shlex.join(cmd), file=sys.stderr)
+        if res.returncode < 0:
+            print(f"killed by signal {-res.returncode}", file=sys.stderr)
+        else:
+            print(f"exited with status {res.returncode}", file=sys.stderr)
+        if res.stdout:
+            sys.stderr.write(res.stdout)
         sys.exit(res.returncode)
     return res
 
