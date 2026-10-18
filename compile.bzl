@@ -1728,6 +1728,15 @@ def _compile_module(
             # starts no second GHC for this flag, it only checks the file
             # arrived.
             wrapper_args_for_file.add("--abi-from-plugin", outputs.outputs[module.hash])
+
+            # The plugin also lists the interfaces GHC read, and the wrapper
+            # names their hash files in the dep file, so the dependency
+            # modules' hashes are tagged as the worker's are: a compile reruns
+            # when a module it read changes its ABI, not when any module below
+            # it does. A splice-running compile still keys on its
+            # dependencies' whole interfaces, untagged, below.
+            wrapper_args_for_file.add("--read-interfaces-dep", "true")
+            abi_hash_inputs = abi_tag.tag_artifacts(abi_hash_inputs)
         else:
             wrapper_args_for_file.add("--abi-out", outputs.outputs[module.hash])
 

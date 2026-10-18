@@ -25,6 +25,11 @@ var wrapOptions = []option{
 	{name: "--ghc-argsfile", arity: one},
 	{name: "--abi-out", arity: one},
 	{name: "--abi-from-plugin", arity: one},
+	// "true" when the oneshot plugin is loaded: the dep file then names the
+	// hash files of the interfaces the compile read, which the plugin lists.
+	// The name shares no prefix with the other options, so every
+	// abbreviation argparse accepted before still parses the same.
+	{name: "--read-interfaces-dep", arity: one},
 	{name: "--bin-path", arity: one, repeated: true},
 	{name: "--bin-exe", arity: one, repeated: true},
 	{name: "--extra-env-key", arity: one, repeated: true},
@@ -67,6 +72,18 @@ func wrap(args []string) int {
 		env = setEnv(env, k, values[i])
 	}
 
+	readList := ""
+	if v, ok := p.last("--read-interfaces-dep"); ok && v == "true" {
+		dir, err := os.MkdirTemp("", "haskell-tool-")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer os.RemoveAll(dir)
+		readList = path.Join(dir, "read-interfaces")
+		env = setEnv(env, readInterfacesVar, readList)
+	}
+
 	if code := run(cmd, env, os.Stderr); code != 0 {
 		return code
 	}
@@ -84,9 +101,19 @@ func wrap(args []string) int {
 		}
 	}
 	if dep, ok := p.last("--buck2-dep"); ok && dep != "" {
-		// Empty: every file the abi tag covers is unused, so a dependency's
-		// interface can change without rerunning this compile unless its hash does.
-		if err := writeOrRemove(dep, "\n"); err != nil {
+		// Without the plugin's list, empty: every file the abi tag covers is
+		// unused, and compile.bzl leaves the hash files untagged, so a
+		// dependency's interface can change without rerunning this compile
+		// unless some hash below it does.
+		content := "\n"
+		if readList != "" {
+			var err error
+			if content, err = hashDepFile(readList); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		if err := writeOrRemove(dep, content); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -105,6 +132,59 @@ func wrap(args []string) int {
 		}
 	}
 	return 0
+}
+
+// readInterfacesVar names the file the oneshot plugin lists the interfaces
+// it read in; Buck2Haskell.OneshotLinkables reads the same variable.
+const readInterfacesVar = "BUCK2_HASKELL_READ_INTERFACES"
+
+// hashDepFile turns the plugin's list of interfaces into the dep file: the
+// hash file beside each interface, as a path under the working directory,
+// for the ones the action has. buck2 tagged every dependency module's hash,
+// so a hash left out is one whose change does not rerun this compile, and a
+// list the plugin never wrote fails the action rather than keying it on
+// nothing. Interfaces outside the working directory are the toolchain's
+// packages, whose files buck2 does not tag.
+func hashDepFile(list string) (string, error) {
+	data, err := os.ReadFile(list)
+	if err != nil {
+		return "", fmt.Errorf("the oneshot plugin wrote no list of the interfaces it read: %w", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		p := path.Clean(line)
+		if path.IsAbs(p) {
+			rel, ok := strings.CutPrefix(p, path.Clean(cwd)+"/")
+			if !ok {
+				continue
+			}
+			p = rel
+		}
+		if p == ".." || strings.HasPrefix(p, "../") {
+			continue
+		}
+		hash := p + ".hash"
+		if seen[hash] {
+			continue
+		}
+		seen[hash] = true
+		if info, err := os.Stat(hash); err == nil && info.Mode().IsRegular() {
+			out = append(out, hash)
+		}
+	}
+	if len(out) == 0 {
+		return "\n", nil
+	}
+	sort.Strings(out)
+	return strings.Join(out, "\n") + "\n", nil
 }
 
 // writeAbiHash reads the hash GHC records in the interface beside abiOut

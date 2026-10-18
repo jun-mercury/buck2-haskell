@@ -85,6 +85,20 @@ import GHC.Unit.Module.ModSummary (ModSummary, ms_hspp_opts, ms_location, ms_tex
 import GHC.Unit.Module.ModIface (ModIface, mi_deps, mi_usages)
 import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..), ModuleNameWithIsBoot)
 import GHC.Utils.Outputable (text)
+import System.Environment (lookupEnv)
+import GHC.Builtin.Names (gHC_PRIM)
+import GHC.Driver.Env (hscEPS)
+import GHC.Unit.External (ExternalPackageState (..))
+import GHC.Unit.Finder (findExactModule)
+import GHC.Unit.Finder.Types (InstalledFindResult (..))
+import GHC.Unit.Module (moduleName, toUnitId)
+import GHC.Unit.Module.Env (moduleEnvToList)
+import qualified GHC.Unit.Module.ModIface as ModIface
+#if __GLASGOW_HASKELL__ < 914
+import GHC.Driver.Config.Finder (initFinderOpts)
+import GHC.Driver.Env (hsc_HUG, hsc_home_unit_maybe, hsc_units)
+import GHC.Unit.Env (HomeUnitEnv (..))
+#endif
 
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER
 import Control.Applicative ((<|>))
@@ -186,8 +200,8 @@ installAbiHashHook hsc_env =
     hook k phase = do
       result <- k phase
       case phase of
-        T_HscBackend _ _ _ _ location _ -> case result of
-          (_, iface, _, _) -> writeAbiHash (hashPath location) iface
+        T_HscBackend _ env _ _ location _ -> case result of
+          (_, iface, _, _) -> writeAbiHash (hashPath location) iface >> writeReadInterfaces env
         -- This arm cannot fire under buck2 and is kept for GHC's sake rather
         -- than ours. `HscUpToDate` means GHC found the interface already
         -- current, which needs the interface to exist when the compile starts;
@@ -195,9 +209,9 @@ installAbiHashHook hsc_env =
         -- remote action begins with none of its outputs present, so every
         -- compile takes `HscRecompNeeded` and runs the backend. Nothing here
         -- claims coverage for it.
-        T_HscRecomp{} -> case result of
+        T_HscRecomp _ env _ _ -> case result of
           (_, summary, HscUpToDate iface _) ->
-            writeAbiHash (hashPath (ms_location summary)) iface
+            writeAbiHash (hashPath (ms_location summary)) iface >> writeReadInterfaces env
           _ -> pure ()
         _ -> pure ()
       pure result
@@ -209,6 +223,70 @@ writeAbiHash :: FilePath -> ModIface -> IO ()
 writeAbiHash path iface = writeFile path (show (mi_mod_hash iface))
 #else
 writeAbiHash path iface = writeFile path (show (mi_mod_hash (mi_final_exts iface)))
+#endif
+
+-- | Where the wrapper asks for the list of interfaces this compile read.
+usedInterfacesVar :: String
+usedInterfacesVar = "BUCK2_HASKELL_READ_INTERFACES"
+
+-- | List every interface file this compile read, for the wrapper to turn into
+-- buck2's dep file.
+--
+-- A one-shot compile keys on the ABI hash of every module below it, because
+-- without a list buck2 cannot tell which of them the compile used. GHC
+-- already knows: every interface it read is in the external package state,
+-- since in one-shot mode the modules of this unit are external too. That set
+-- covers GHC's own usages (direct imports and the defining module of every
+-- name used, which 'mkUsageM' loads), the orphan and family-instance modules
+-- the type checker loads, and the interfaces this plugin loads. A module GHC
+-- never read cannot have shaped the output, apart from through the hashes of
+-- the modules that import it, which carry its orphan and export changes
+-- upward (GHC's Note in 'GHC.HsToCore.Usage' on depend_on_exports). So its
+-- hash file can be left out of the key.
+--
+-- GHC.Prim has no interface file, and the finder panics when asked for one.
+--
+-- Each interface is written as both its static and dynamic paths, and a boot
+-- interface with the suffix as well; the wrapper keeps the paths whose hash
+-- file the action has. Nothing is written unless the wrapper set the
+-- variable, so the metadata step and a compile outside buck2 are unchanged.
+writeReadInterfaces :: HscEnv -> IO ()
+writeReadInterfaces hsc_env =
+  lookupEnv usedInterfacesVar >>= \case
+    Nothing -> pure ()
+    Just out -> do
+      eps <- hscEPS hsc_env
+      paths <- traverse locate (filter ((/= gHC_PRIM) . fst) (moduleEnvToList (eps_PIT eps)))
+      writeFile out (unlines (concat paths))
+  where
+    locate (m, iface) = do
+      let installed = mkModule (toUnitId (moduleUnit m)) (moduleName m)
+      found <- findInstalled installed (ModIface.mi_boot iface)
+      pure $ case found of
+        Just loc -> concatMap (withBoot (ModIface.mi_boot iface)) [ml_hi_file loc, ml_dyn_hi_file loc]
+        Nothing -> []
+
+    withBoot IsBoot path = [path, path ++ "-boot"]
+    withBoot NotBoot path = [path]
+
+#if __GLASGOW_HASKELL__ >= 914
+    findInstalled installed isBoot =
+      findExactModule hsc_env installed isBoot >>= \case
+        InstalledFound loc -> pure (Just loc)
+        _ -> pure Nothing
+#else
+    findInstalled installed isBoot =
+      findExactModule
+        (hsc_FC hsc_env)
+        (initFinderOpts (hsc_dflags hsc_env))
+        (initFinderOpts . homeUnitEnv_dflags <$> hsc_HUG hsc_env)
+        (hsc_units hsc_env)
+        (hsc_home_unit_maybe hsc_env)
+        installed
+        isBoot
+        >>= \case
+          InstalledFound loc -> pure (Just loc)
+          _ -> pure Nothing
 #endif
 
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER
