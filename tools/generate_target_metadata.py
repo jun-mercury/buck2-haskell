@@ -369,8 +369,15 @@ def run_ghc_depends(
             # Fail if GHC failed.
             sys.exit(res.returncode)
 
-        with open(json_fname) as f:
-            return json.load(f)
+        # A traceback here would name only a temporary path that is gone by
+        # the time anyone reads it; name the command that should have written it.
+        try:
+            with open(json_fname) as f:
+                return json.load(f)
+        except (OSError, ValueError) as e:
+            print(shlex.join(args_outer), file=sys.stderr)
+            print(f"ghc exited with status 0 but left no readable -dep-json: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 def src_to_module_name(x):
