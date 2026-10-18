@@ -1327,18 +1327,24 @@ def _common_compile_module_args(
         # Add -package-db and -package/-expose-package flags for each Haskell
         # library dependency.
 
+        # The env file names each first-party db by its directory, and the
+        # compile declares only the `package.cache` inside it, the one file
+        # GHC reads (see `_project_as_empty_package_cache`). The toolchain dbs
+        # are store paths, not artifacts, so they are named and never inputs.
         if incremental:
             packagedb_args = cmd_args(libs.project_as_args("empty_package_db"))
+            packagedb_inputs = cmd_args(libs.project_as_args("empty_package_cache"))
         else:
             all_link_group_ids = [l.id for lg in arg.link_group_libs for l in lg.libraries]
             packagedb_args = cmd_args()
+            packagedb_inputs = cmd_args()
             for d in list(libs.traverse()):
-                if d.name in all_link_group_ids:
-                    packagedb_args.add(cmd_args(d.empty_db))
-                else:
-                    packagedb_args.add(cmd_args(d.db))
+                db = d.empty_db if d.name in all_link_group_ids else d.db
+                packagedb_args.add(cmd_args(db))
+                packagedb_inputs.add(cmd_args(db.project("package.cache")))
         for lg in arg.link_group_libs:
             packagedb_args.add(cmd_args(lg.db))
+            packagedb_inputs.add(cmd_args(lg.db.project("package.cache")))
 
         packagedb_args.add(toolchain_package_db_tset.project_as_args("toolchain_package_db"))
 
@@ -1355,7 +1361,7 @@ def _common_compile_module_args(
         package_env_args = cmd_args(
             package_env_file,
             prepend = "-package-env",
-            hidden = packagedb_args,
+            hidden = packagedb_inputs,
         )
 
     # target-level dependencies. needed for non-incremental build.
@@ -1492,7 +1498,12 @@ def _wrapper_oneshot_args(
         src_envs: None | dict[str, ArgLike],
         packagedb_tag: ArtifactTag):
     args = cmd_args()
-    args.add(cmd_args(dependency_modules.reduce("packagedb_deps").keys(), prepend = "--buck2-package-db"))
+    # The dep file has to list the inputs the packagedb tag covers, and those
+    # are the dbs' caches rather than their directories.
+    args.add(cmd_args(
+        [db.project("package.cache") for db in dependency_modules.reduce("packagedb_deps").keys()],
+        prepend = "--buck2-package-db",
+    ))
 
     dep_file = actions.declare_output(".".join([
         label.name,
