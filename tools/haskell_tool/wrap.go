@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -163,15 +164,29 @@ func hashDepFile(list string, splices bool) (string, error) {
 	}
 	seen := map[string]bool{}
 	var out []string
-	add := func(p string) {
+	add := func(p string) bool {
 		if seen[p] {
-			return
+			return true
 		}
-		seen[p] = true
 		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+			seen[p] = true
 			out = append(out, p)
+			return true
 		}
+		return false
 	}
+	// The plugin names each interface by its static and its dynamic path, and
+	// only one of them is the compile's, so a module counts as covered when
+	// either has a hash. One whose interface the action holds but none of
+	// whose hashes it does is a first-party module this compile read without
+	// buck2 having tagged its hash: leaving it out would key the compile on
+	// too little, so that fails the action. First-party interfaces are the
+	// ones compile.bzl declares under a mod-* directory. A toolchain package's
+	// interface resolves through the out.link symlink into the nix store, and
+	// the oneshot plugin's own sits in its package's hi directory; neither
+	// has a hash by design.
+	type module struct{ present, hashed bool }
+	modules := map[string]*module{}
 	linker := false
 	for _, line := range strings.Split(string(data), "\n") {
 		kind, file, _ := strings.Cut(line, "\t")
@@ -196,10 +211,31 @@ func hashDepFile(list string, splices bool) (string, error) {
 		if p == "." || p == ".." || strings.HasPrefix(p, "../") {
 			continue
 		}
-		add(p + ".hash")
+		key := moduleKey(p)
+		m := modules[key]
+		if m == nil {
+			m = &module{}
+			modules[key] = m
+		}
+		if add(p + ".hash") {
+			m.hashed = true
+		}
+		if !m.present && firstPartyInterface(p, cwd) {
+			m.present = true
+		}
 		if kind == "linked" && splices {
 			add(p)
 		}
+	}
+	var missing []string
+	for key, m := range modules {
+		if m.present && !m.hashed {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return "", fmt.Errorf("the compile read interfaces with no hash file beside them, so the dep file cannot name them: %s", strings.Join(missing, ", "))
 	}
 	if splices && !linker {
 		return "", errors.New("the oneshot plugin did not resolve this compile's splices, so it cannot list the interfaces they linked")
@@ -209,6 +245,49 @@ func hashDepFile(list string, splices bool) (string, error) {
 	}
 	sort.Strings(out)
 	return strings.Join(out, "\n") + "\n", nil
+}
+
+// moduleKey names the module an interface path belongs to, the same for its
+// static and dynamic interfaces and distinct for its boot interface.
+func moduleKey(p string) string {
+	boot := strings.HasSuffix(p, "-boot")
+	p = strings.TrimSuffix(p, "-boot")
+	p = strings.TrimSuffix(p, path.Ext(p))
+	if boot {
+		return p + " (boot)"
+	}
+	return p
+}
+
+// firstPartyInterface says whether p is an interface compile.bzl declared: a
+// regular file under a mod-* directory whose real path, symlinks resolved,
+// lies under dir.
+func firstPartyInterface(p, dir string) bool {
+	inModDir := false
+	for _, c := range strings.Split(path.Dir(p), "/") {
+		if strings.HasPrefix(c, "mod-") {
+			inModDir = true
+		}
+	}
+	if !inModDir {
+		return false
+	}
+	info, err := os.Stat(p)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(real) {
+		return true
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		root = dir
+	}
+	return strings.HasPrefix(real, filepath.Clean(root)+string(filepath.Separator))
 }
 
 // writeAbiHash reads the hash GHC records in the interface beside abiOut
