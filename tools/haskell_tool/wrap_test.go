@@ -154,6 +154,54 @@ func TestWrapWritesTheHashesOfTheInterfacesRead(t *testing.T) {
 	}
 }
 
+// A first-party interface the compile read that the action holds without its
+// hash fails the action: the dep file could not name it, so a change to it
+// would not rerun the compile. A toolchain interface reached through a
+// symlink out of the working directory, and an interface outside any mod-*
+// directory (the plugin's own), have no hash and are left out as before.
+func TestWrapStopsOnAFirstPartyInterfaceWithoutItsHash(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	inDir(t, dir)
+	for _, f := range []string{"dep/mod-shared/A.dyn_hi", "dep/mod-shared/A.dyn_hi.hash", "dep/mod-shared/F.dyn_hi", "plugin/hi/P.dyn_hi"} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("h"), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(outside, "mod-x"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "mod-x", "Prelude.dyn_hi"), []byte("h"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll("tc", 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, "tc/out.link"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HASKELL_TOOL_FAKE_GHC", "1")
+	read := "read\tdep/mod-shared/A.hi\nread\tdep/mod-shared/A.dyn_hi\n" +
+		"read\ttc/out.link/mod-x/Prelude.dyn_hi\nread\tplugin/hi/P.dyn_hi\n"
+	t.Setenv("HASKELL_TOOL_FAKE_GHC_READ", read)
+	if code := wrap([]string{"--ghc", fakeGhc(t), "--buck2-dep", "ok.dep", "--read-interfaces-dep", "true", "-c", "X.hs"}); code != 0 {
+		t.Fatalf("wrap exited %d with every first-party interface hashed", code)
+	}
+	if got, _ := os.ReadFile("ok.dep"); string(got) != "dep/mod-shared/A.dyn_hi.hash\n" {
+		t.Errorf("dep file %q", got)
+	}
+	t.Setenv("HASKELL_TOOL_FAKE_GHC_READ", read+"read\tdep/mod-shared/F.hi\nread\tdep/mod-shared/F.dyn_hi\n")
+	if code := wrap([]string{"--ghc", fakeGhc(t), "--buck2-dep", "x.dep", "--read-interfaces-dep", "true", "-c", "X.hs"}); code != 1 {
+		t.Errorf("wrap exited %d, want 1 for dep/mod-shared/F.dyn_hi without its hash", code)
+	}
+	if _, err := os.Stat("x.dep"); err == nil {
+		t.Errorf("dep file written although an interface had no hash")
+	}
+}
+
 // A compile that asked for the plugin's list and got none fails: an empty dep
 // file would count every tagged hash as unused and serve a stale compile.
 func TestWrapStopsWhenThePluginListedNothing(t *testing.T) {
