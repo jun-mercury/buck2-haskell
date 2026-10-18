@@ -65,6 +65,10 @@ HaskellLibraryInfo = record(
     toolchain_dependencies = list[HaskellToolchainLibrary],
     md_file = Artifact | None,
     skeleton = field(Artifact | None, None),
+    # package config database like `empty_db`, whose import dirs hold the
+    # interfaces without Core that a compile running no splice reads; see
+    # `oneshot_slim_interfaces_enabled`. None when slim interfaces are off.
+    slim_db = field(Artifact | None, None),
 )
 
 # If the target is a haskell library, the HaskellLibraryProvider
@@ -84,6 +88,13 @@ def _project_as_package_db(lib: HaskellLibraryInfo) -> cmd_args:
 
 def _project_as_empty_package_db(lib: HaskellLibraryInfo) -> cmd_args:
     return cmd_args(lib.empty_db) if lib.empty_db != None else cmd_args()
+
+# A library without slim interfaces falls back to its empty db, whose import
+# dirs hold the full interfaces, so a compile reading slim ones still finds
+# every module.
+def _project_as_slim_package_db(lib: HaskellLibraryInfo) -> cmd_args:
+    db = lib.slim_db or lib.empty_db
+    return cmd_args(db) if db != None else cmd_args()
 
 def _project_as_deps_package_db(lib: HaskellLibraryInfo) -> cmd_args:
     return cmd_args(lib.deps_db) if lib.deps_db != None else cmd_args()
@@ -124,6 +135,7 @@ HaskellLibraryInfoTSet = transitive_set(
     args_projections = {
         "package_db": _project_as_package_db,
         "empty_package_db": _project_as_empty_package_db,
+        "slim_package_db": _project_as_slim_package_db,
         "deps_package_db": _project_as_deps_package_db,
         "libs": _project_as_libs,
         "interfaces": _project_as_interfaces,

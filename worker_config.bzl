@@ -28,6 +28,19 @@ def oneshot_linker_enabled() -> bool:
         return value == "true"
     fail("haskell.oneshot_linker must be `true` or `false`, got `{}`".format(value))
 
+# Whether a one-shot compile also writes its interface without Core, and a
+# compile that runs no splice reads those slim interfaces of its first-party
+# dependencies. Only a splice reads the Core in an interface, as the byte code
+# it runs, and a plain compile otherwise deserialises it for every interface
+# it loads. It costs one more package registration per library and a second
+# copy of every first-party interface. GHC 9.10 only: the plugin refuses to
+# write one on 9.14.
+def oneshot_slim_interfaces_enabled() -> bool:
+    value = read_root_config("haskell", "oneshot_slim_interfaces", "false").lower()
+    if value in ["true", "false"]:
+        return value == "true"
+    fail("haskell.oneshot_slim_interfaces must be `true` or `false`, got `{}`".format(value))
+
 # Whether a compile with splices loads its whole import closure first. On, a
 # module at the top of a large graph loads every interface below it, which
 # an executor with a memory limit per action can refuse.

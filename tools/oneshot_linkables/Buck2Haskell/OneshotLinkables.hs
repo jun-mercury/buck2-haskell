@@ -85,6 +85,13 @@ import GHC.Unit.Module.ModSummary (ModSummary, ms_hspp_opts, ms_location, ms_tex
 import GHC.Unit.Module.ModIface (ModIface, mi_deps, mi_usages)
 import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..), ModuleNameWithIsBoot)
 import GHC.Utils.Outputable (text)
+import System.Environment (lookupEnv)
+#if __GLASGOW_HASKELL__ < 914
+import qualified GHC.Data.Strict as Strict
+import GHC.Driver.Session (ifCompression, targetProfile)
+import GHC.Iface.Binary (CompressionIFace (..), TraceBinIFace (QuietBinIFace), writeBinIface)
+import GHC.Unit.Module.ModIface (IfaceBinHandle (FullIfaceBinHandle), set_mi_extra_decls, set_mi_hi_bytes)
+#endif
 
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER
 import Control.Applicative ((<|>))
@@ -186,8 +193,8 @@ installAbiHashHook hsc_env =
     hook k phase = do
       result <- k phase
       case phase of
-        T_HscBackend _ _ _ _ location _ -> case result of
-          (_, iface, _, _) -> writeAbiHash (hashPath location) iface
+        T_HscBackend _ env _ _ location _ -> case result of
+          (_, iface, _, _) -> writeAbiHash (hashPath location) iface >> writeSlimInterface env iface
         -- This arm cannot fire under buck2 and is kept for GHC's sake rather
         -- than ours. `HscUpToDate` means GHC found the interface already
         -- current, which needs the interface to exist when the compile starts;
@@ -197,7 +204,7 @@ installAbiHashHook hsc_env =
         -- claims coverage for it.
         T_HscRecomp{} -> case result of
           (_, summary, HscUpToDate iface _) ->
-            writeAbiHash (hashPath (ms_location summary)) iface
+            writeAbiHash (hashPath (ms_location summary)) iface >> writeSlimInterface hsc_env iface
           _ -> pure ()
         _ -> pure ()
       pure result
@@ -209,6 +216,52 @@ writeAbiHash :: FilePath -> ModIface -> IO ()
 writeAbiHash path iface = writeFile path (show (mi_mod_hash iface))
 #else
 writeAbiHash path iface = writeFile path (show (mi_mod_hash (mi_final_exts iface)))
+#endif
+
+-- | Where the wrapper's action asks for this module's slim interface.
+slimInterfaceVar :: String
+slimInterfaceVar = "BUCK2_HASKELL_SLIM_INTERFACE"
+
+-- | Write a second copy of the module's interface without the Core that
+-- @-fbyte-code-and-object-code@ stores in it ('mi_extra_decls'), for the
+-- compiles that never run a splice.
+--
+-- Only a splice reads that Core: with @-fprefer-byte-code@ it is the byte code
+-- the splice runs. A compile without splices still pays to deserialise it for
+-- every interface it loads, and on mercury-banking's heavy modules most of
+-- their GHC time went to reading it and collecting the garbage it left
+-- (claim core-in-first-party-interfaces-causes-heavy-plain-compile-gap: 78 of
+-- 76 ideal CPU-s recovered on ten modules, with identical objects).
+--
+-- Every other field, the fingerprints included, is written as GHC built it,
+-- so the copy has the same ABI hash and a compile that reads it records the
+-- same usages. 'mi_hi_bytes' caches the serialised interface and the writer
+-- prefers the cache, so it is dropped as well. The profile is the compile's
+-- own, which carries the dynamic way when the compile builds shared objects,
+-- and the compression is the session's, as GHC used for the full interface.
+--
+-- Nothing is written unless the action set the variable, so a compile with
+-- slim interfaces off, the metadata step and a compile outside buck2 are
+-- unchanged.
+writeSlimInterface :: HscEnv -> ModIface -> IO ()
+writeSlimInterface env iface =
+  lookupEnv slimInterfaceVar >>= \case
+    Nothing -> pure ()
+    Just out -> writeWithoutCore (hsc_dflags env) out iface
+
+writeWithoutCore :: DynFlags -> FilePath -> ModIface -> IO ()
+#if __GLASGOW_HASKELL__ >= 914
+-- The 9.14 writer and setters have not been checked; refuse rather than
+-- write an interface nobody has compared with the full one.
+writeWithoutCore _ out _ = fail ("slim interfaces are only implemented for GHC 9.10, asked to write " ++ out)
+#else
+writeWithoutCore dflags out iface =
+  writeBinIface (targetProfile dflags) QuietBinIFace compression out (set_mi_hi_bytes (FullIfaceBinHandle Strict.Nothing) (set_mi_extra_decls Nothing iface))
+  where
+    compression = case ifCompression dflags of
+      1 -> NormalCompression
+      2 -> SafeExtraCompression
+      _ -> MaximumCompression
 #endif
 
 #ifdef BUCK2_HASKELL_ONESHOT_LINKER

@@ -413,7 +413,8 @@ def _register_package_conf(
         artifact_suffix: str,
         use_empty_lib: bool,
         allow_cache_upload: bool,
-        remote_execution: dict[str, typing.Any] = {}) -> None:
+        remote_execution: dict[str, typing.Any] = {},
+        identifier: str | None = None) -> None:
     register_cmd = cmd_args(registerer)
     register_cmd.add("--ghc-pkg", packager)
     register_cmd.add("--output", db)
@@ -422,7 +423,7 @@ def _register_package_conf(
     actions.run(
         register_cmd,
         category = category_prefix + artifact_suffix.replace("-", "_"),
-        identifier = "empty" if use_empty_lib else "final",
+        identifier = identifier or ("empty" if use_empty_lib else "final"),
         # explicit turn this on for local_only actions to upload their results.
         allow_cache_upload = allow_cache_upload,
         **remote_execution
@@ -457,6 +458,9 @@ _WritePackageConfOptions = record(
     haskell_toolchain = HaskellToolchainInfo,
     registerer = RunInfo,
     extra_libs = list[Artifact],
+    # Import dirs under `slim-mod-*`, the interfaces without Core; see
+    # `oneshot_slim_interfaces_enabled`.
+    slim = field(bool, False),
 )
 
 def _write_package_conf_impl(
@@ -480,16 +484,17 @@ def _write_package_conf_impl(
     # XXX use a single import dir when this package db is used for resolving dependencies with ghc -M,
     #     which works around an issue with multiple import dirs resulting in GHC trying to locate interface files
     #     for each exposed module
+    mod_dir = "slim-mod" if arg.slim else "mod"
     if arg.for_deps:
         import_dirs = ["."]
     elif not source_prefixes_excluded:
         import_dirs = [
-            _mk_artifact_dir("mod", profiled, arg.link_style)
+            _mk_artifact_dir(mod_dir, profiled, arg.link_style)
             for profiled in arg.profiling
         ]
     else:
         import_dirs = [
-            _mk_artifact_dir("mod", profiled, arg.link_style, src_prefix)
+            _mk_artifact_dir(mod_dir, profiled, arg.link_style, src_prefix)
             for profiled in arg.profiling
             for src_prefix in source_prefixes_excluded
         ]
@@ -566,6 +571,7 @@ def _write_package_conf_impl(
         arg.use_empty_lib,
         arg.allow_cache_upload,
         remote_execution_class(arg.haskell_toolchain, "small"),
+        identifier = "slim" if arg.slim else None,
     )
 
     return []
@@ -613,10 +619,14 @@ def _make_package(
         module_sources: dict[str, Artifact],
         extra_lib_info: ExtraLibraryInfo,
         for_deps: bool = False,
-        omit_depends: bool = False):
+        omit_depends: bool = False,
+        slim: bool = False):
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
 
-    if for_deps:
+    if slim:
+        pkg_conf = ctx.actions.declare_output("pkg-" + artifact_suffix + "_slim.conf")
+        db = ctx.actions.declare_output("db-" + artifact_suffix + "_slim", dir = True)
+    elif for_deps:
         pkg_conf = ctx.actions.declare_output("pkg-" + artifact_suffix + "_deps.conf")
         db = ctx.actions.declare_output("db-" + artifact_suffix + "_deps", dir = True)
     elif use_empty_lib:
@@ -662,6 +672,7 @@ def _make_package(
         haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo],
         registerer = ctx.attrs._ghc_pkg_registerer[RunInfo],
         extra_libs = extra_lib_info.extra_libs,
+        slim = slim,
     )
 
     ctx.actions.dynamic_output_new(
@@ -1116,10 +1127,30 @@ def _build_haskell_lib(
         omit_depends = not check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client),
     )
 
+    # The same registration as `empty_db`, pointing at the interfaces without
+    # Core, for the compiles that run no splice.
+    if compiled.slim:
+        slim_db, _slim_conf = _make_package(
+            ctx,
+            link_style,
+            pkgname,
+            None,
+            uniq_infos,
+            interface_artifacts.keys(),
+            enable_profiling = enable_profiling,
+            use_empty_lib = True,
+            module_sources = compiled.module_sources,
+            extra_lib_info = extra_lib_info,
+            slim = True,
+        )
+    else:
+        slim_db = None
+
     hlib = HaskellLibraryInfo(
         name = pkgname,
         db = db,
         empty_db = empty_db,
+        slim_db = slim_db,
         deps_db = deps_db,
         conf = HaskellPackageConfInfo(
             final_conf = final_conf,

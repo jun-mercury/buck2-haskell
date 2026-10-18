@@ -48,6 +48,7 @@ load(
     "traverse_extra_libraries",
 )
 load(":oneshot_linkables.bzl", "OneshotLinkablesInfo")
+load(":worker_config.bzl", "oneshot_slim_interfaces_enabled")
 load(
     ":toolchain.bzl",
     "DynamicHaskellToolchainPackageDbInfo",
@@ -85,6 +86,11 @@ CompiledModuleInfo = provider(fields = {
     # TODO[AH] track this module's package-name/id & package-db instead.
     "db_deps": provider_field(list[Artifact]),
     "package": provider_field(str),
+    # The module's interfaces without Core, and the slim package dbs its
+    # compile read in place of `db_deps`; empty unless slim interfaces are
+    # on (`oneshot_slim_interfaces_enabled`).
+    "slim_interfaces": provider_field(list[Artifact], default = []),
+    "slim_db_deps": provider_field(list[Artifact], default = []),
 })
 
 # Module dependency graph transitive sets including package deps as leaves
@@ -108,6 +114,11 @@ def _compiled_module_project_as_abi(mod: CompiledModuleInfo) -> cmd_args:
 def _compiled_module_project_as_interfaces(mod: CompiledModuleInfo) -> cmd_args:
     return cmd_args(mod.interfaces)
 
+# A module compiled without a slim interface offers its full one, which is
+# where a compile reading slim interfaces then finds it.
+def _compiled_module_project_as_slim_interfaces(mod: CompiledModuleInfo) -> cmd_args:
+    return cmd_args(mod.slim_interfaces or mod.interfaces)
+
 def _compiled_module_project_as_hie_files(mod: CompiledModuleInfo) -> cmd_args:
     return cmd_args(mod.hie_files)
 
@@ -119,14 +130,22 @@ def _compiled_module_reduce_as_packagedb_deps(children: list[dict[Artifact, None
         result.update(child)
     return result
 
+def _compiled_module_reduce_as_slim_packagedb_deps(children: list[dict[Artifact, None]], mod: CompiledModuleInfo | None) -> dict[Artifact, None]:
+    result = {db: None for db in (mod.slim_db_deps or mod.db_deps)} if mod else {}
+    for child in children:
+        result.update(child)
+    return result
+
 CompiledModuleTSet = transitive_set(
     args_projections = {
         "abi": _compiled_module_project_as_abi,
         "interfaces": _compiled_module_project_as_interfaces,
+        "slim_interfaces": _compiled_module_project_as_slim_interfaces,
         "hie_files": _compiled_module_project_as_hie_files,
     },
     reductions = {
         "packagedb_deps": _compiled_module_reduce_as_packagedb_deps,
+        "slim_packagedb_deps": _compiled_module_reduce_as_slim_packagedb_deps,
     },
 )
 
@@ -153,6 +172,9 @@ CompileResultInfo = record(
     # than from the target's metadata, so that registering a package never
     # waits on that target's `ghc -M`; see `_write_package_conf_impl`.
     module_sources = field(dict[str, Artifact], {}),
+    # Whether the modules also wrote interfaces without Core, so the library
+    # registers a slim package db beside its empty one.
+    slim = field(bool, False),
 )
 
 PackagesInfo = record(
@@ -180,6 +202,9 @@ _Module = record(
     stub_dir = field(Artifact | None),
     prefix_dir = field(str),
     hpc_dir = field(Artifact | None, None),
+    # The interface without Core, under `slim-<prefix_dir>`, when slim
+    # interfaces apply to the unit.
+    slim_interfaces = field(list[Artifact], []),
 )
 
 def _get_module_outputs(
@@ -243,6 +268,12 @@ _DynamicDoCompileOptions = record(
     # Modules with splices that compile without the plugin's transitive
     # import walk: see the `oneshot_th_closure_exclude` attribute.
     oneshot_th_closure_exclude = field(list[str], default = []),
+    # A compile that runs no splice reads its first-party dependencies' slim
+    # interfaces and slim package dbs; see `oneshot_slim_interfaces_apply`.
+    # Whether this unit's own modules write slim interfaces is
+    # `_Module.slim_interfaces`: a library's do, a binary's do not, since
+    # nothing imports a binary's modules but the binary itself.
+    slim_interfaces = field(bool, default = False),
     # Toolchain library names required by plugins (from `plugins` attr) that
     # need to be added to the GHC command line. These are not necessarily the
     # same as the toolchain libraries required by the unit itself, since it's
@@ -267,7 +298,8 @@ def _modules_by_name(
         module_prefix: str | None,
         is_haskell_binary: bool,
         src_main: Artifact | None,
-        hpc: bool = False) -> dict[str, _Module]:
+        hpc: bool = False,
+        slim: bool = False) -> dict[str, _Module]:
     modules = {}
     predefined_name_map = {}
 
@@ -316,6 +348,10 @@ def _modules_by_name(
 
         interface = ctx.actions.declare_output("mod-" + suffix, interface_path)
         interfaces = [interface]
+
+        # The same relative path under `slim-mod-*`, so one -hidir, or one
+        # import dir in the slim package db, finds every slim interface.
+        slim_interfaces = [ctx.actions.declare_output("slim-mod-" + suffix, interface_path)] if slim else []
 
         object = ctx.actions.declare_output("mod-" + suffix, object_path)
         objects = [object]
@@ -375,6 +411,7 @@ def _modules_by_name(
             stub_dir = stub_dir,
             prefix_dir = prefix_dir,
             hpc_dir = hpc_dir,
+            slim_interfaces = slim_interfaces,
         )
     return modules
 
@@ -987,6 +1024,9 @@ CommonCompileModuleArgs = record(
     oneshot_wrapper_args = field(cmd_args),
     common_args_file = field(Artifact),
     package_env_args = field(cmd_args),
+    # `package_env_args` with the slim package dbs, for a compile that runs
+    # no splice; None unless slim interfaces are on.
+    slim_package_env_args = field(cmd_args | None, None),
     target_deps_args = field(cmd_args),
     toolchain_package_db = field(dict[str, HaskellToolchainPackageDbTSet]),
     # Native libraries of dependency packages (`extra_libraries` reached
@@ -1051,7 +1091,8 @@ def make_package_env(
         enable_profiling: bool,
         allow_worker: bool,
         worker: WorkerInfo | None,
-        packagedb_args: cmd_args) -> Artifact:
+        packagedb_args: cmd_args,
+        variant: str | None = None) -> Artifact:
     # TODO[AH] Avoid duplicates and share identical env files.
     #   The set of package-dbs can be known at the package level, not just the
     #   module level. So, we could generate this file outside of the
@@ -1060,6 +1101,7 @@ def make_package_env(
         label.name,
         "package-db",
         output_extensions(link_style, enable_profiling)[1],
+    ] + ([variant] if variant else []) + [
         "env",
     ]))
     package_env = cmd_args(delimiter = "\n")
@@ -1116,6 +1158,10 @@ def _direct_dep_artifact(dep: _DirectDep) -> Artifact:
     """
     return dep[0]
 
+def _direct_dep_slim_db(dep: _DirectDep) -> Artifact | None:
+    """The dependency's slim package db, or None when it registered none."""
+    return dep[2]
+
 def _direct_dep_compile_result(dep: _DirectDep) -> DynamicCompileResultInfo:
     """Get the `DynamicCompileResultInfo` out of a `_DirectDep`.
 
@@ -1131,6 +1177,7 @@ _IndexedPackageDeps = record(
     package_deps = list[str],
     exposed_package_modules = list[CompiledModuleTSet],
     exposed_package_dbs = list[Artifact],
+    exposed_package_slim_dbs = field(list[Artifact], []),
 )
 
 DepsByNameInfo = record(
@@ -1150,6 +1197,7 @@ def _categorize_package_deps(
     toolchain_deps = []
     exposed_package_modules = []
     exposed_package_dbs = []
+    exposed_package_slim_dbs = []
 
     for (dep_pkgname, dep_modules) in module_package_deps.packages.items():
         if dep_pkgname in deps_by_name.toolchain:
@@ -1158,6 +1206,7 @@ def _categorize_package_deps(
             direct_dep = deps_by_name.direct[dep_pkgname]
 
             exposed_package_dbs.append(_direct_dep_artifact(direct_dep))
+            exposed_package_slim_dbs.append(_direct_dep_slim_db(direct_dep) or _direct_dep_artifact(direct_dep))
 
             for dep_modname in dep_modules:
                 exposed_package_modules.append(_direct_dep_compile_result(direct_dep).modules[dep_modname])
@@ -1169,6 +1218,7 @@ def _categorize_package_deps(
         package_deps = [],
         exposed_package_modules = exposed_package_modules,
         exposed_package_dbs = exposed_package_dbs,
+        exposed_package_slim_dbs = exposed_package_slim_dbs,
     )
 
 def _categorize_package_deps_oneshot(
@@ -1195,6 +1245,7 @@ def _categorize_package_deps_oneshot(
         package_deps = package_deps,
         exposed_package_modules = categorized.exposed_package_modules,
         exposed_package_dbs = categorized.exposed_package_dbs,
+        exposed_package_slim_dbs = categorized.exposed_package_slim_dbs,
     )
 
 # This function is from prelude//cxx/preprocessor.bzl only with ctx.actions -> actions
@@ -1303,6 +1354,7 @@ def _common_compile_module_args(
         children = [toolchain_package_db[name] for name in toolchain_libs if name in toolchain_package_db],
     )
 
+    slim_package_env_args = None
     if is_worker_execute:
         package_env_args = cmd_args()
 
@@ -1358,6 +1410,30 @@ def _common_compile_module_args(
             hidden = packagedb_args,
         )
 
+        # The same dbs with each first-party library's slim db in place of
+        # its empty one, for the compiles that run no splice.
+        if arg.slim_interfaces:
+            slim_packagedb_args = cmd_args(libs.project_as_args("slim_package_db"))
+            for lg in arg.link_group_libs:
+                slim_packagedb_args.add(cmd_args(lg.db))
+            slim_packagedb_args.add(toolchain_package_db_tset.project_as_args("toolchain_package_db"))
+            slim_package_env_file = make_package_env(
+                actions = actions,
+                haskell_toolchain = arg.haskell_toolchain,
+                label = arg.label,
+                link_style = arg.link_style,
+                enable_profiling = arg.enable_profiling,
+                allow_worker = arg.allow_worker,
+                worker = arg.worker,
+                packagedb_args = slim_packagedb_args,
+                variant = "slim",
+            )
+            slim_package_env_args = cmd_args(
+                slim_package_env_file,
+                prepend = "-package-env",
+                hidden = slim_packagedb_args,
+            )
+
     # target-level dependencies. needed for non-incremental build.
     target_deps_args = cmd_args()
 
@@ -1386,6 +1462,7 @@ def _common_compile_module_args(
         oneshot_wrapper_args = oneshot_wrapper_args,
         common_args_file = common_args_file,
         package_env_args = package_env_args,
+        slim_package_env_args = slim_package_env_args,
         target_deps_args = target_deps_args,
         toolchain_package_db = toolchain_package_db,
         extra_libs = extra_libs,
@@ -1408,9 +1485,10 @@ def _compile_oneshot_args(
         package_deps: list[str],
         packagedb_tag: ArtifactTag,
         oneshot_linkables: cmd_args | None,
-        oneshot_preload: cmd_args | None) -> cmd_args:
+        oneshot_preload: cmd_args | None,
+        reads_slim: bool = False) -> cmd_args:
     args = cmd_args()
-    args.add(packagedb_tag.tag_artifacts(common_args.package_env_args))
+    args.add(packagedb_tag.tag_artifacts(common_args.slim_package_env_args if reads_slim else common_args.package_env_args))
 
     outputs_dict = outputs.outputs
     objects = [outputs_dict[obj] for obj in module.objects]
@@ -1427,6 +1505,13 @@ def _compile_oneshot_args(
 
     output_dir = cmd_args([cmd_args(md_file, ignore_artifacts = True, parent = 1), module.prefix_dir], delimiter = "/")
     add_output_dirs(args, output_dir)
+
+    # A one-shot GHC looks for the interfaces of its own unit's modules only
+    # under -hidir, and writes this module's interface where -ohi says, so a
+    # second -hidir moves what it reads to the slim interfaces and nothing
+    # else (GHC.Unit.Finder, findInstalledHomeModule, in one-shot mode).
+    if reads_slim and module.slim_interfaces:
+        args.add("-hidir", cmd_args([cmd_args(md_file, ignore_artifacts = True, parent = 1), "slim-" + module.prefix_dir], delimiter = "/"))
 
     # Every oneshot compile loads the plugin, not only one that runs splices.
     # A module without Template Haskell needs the family-instance modules make
@@ -1490,9 +1575,10 @@ def _wrapper_oneshot_args(
         module_name: str,
         dependency_modules: CompiledModuleTSet,
         src_envs: None | dict[str, ArgLike],
-        packagedb_tag: ArtifactTag):
+        packagedb_tag: ArtifactTag,
+        reads_slim: bool = False):
     args = cmd_args()
-    args.add(cmd_args(dependency_modules.reduce("packagedb_deps").keys(), prepend = "--buck2-package-db"))
+    args.add(cmd_args(dependency_modules.reduce("slim_packagedb_deps" if reads_slim else "packagedb_deps").keys(), prepend = "--buck2-package-db"))
 
     dep_file = actions.declare_output(".".join([
         label.name,
@@ -1584,7 +1670,8 @@ def _compile_module(
         module_plugin_flags: cmd_args | None = None,
         module_plugin_tool_paths: typing.Any = None,
         oneshot_linkables: cmd_args | None = None,
-        oneshot_preload: cmd_args | None = None) -> CompiledModuleTSet:
+        oneshot_preload: cmd_args | None = None,
+        read_slim: bool = False) -> CompiledModuleTSet:
     is_worker_execute = check_is_worker_execute(worker, allow_worker, haskell_toolchain.use_worker, haskell_toolchain.worker_client)
 
     abi_tag = actions.artifact_tag()
@@ -1632,6 +1719,11 @@ def _compile_module(
     )
 
     abi_hash_inputs = dependency_modules.project_as_args("abi")
+
+    # A compile that runs no splice never reads the Core in an interface, so
+    # with slim interfaces on it reads its first-party dependencies' copies
+    # without it. A splice runs that Core as byte code and keeps the full ones.
+    reads_slim = read_slim and not enable_th and not is_worker_execute
 
     # ----------------------------------------------------------------------------------------------------
 
@@ -1709,6 +1801,7 @@ def _compile_module(
             packagedb_tag = packagedb_tag,
             oneshot_linkables = oneshot_linkables,
             oneshot_preload = oneshot_preload,
+            reads_slim = reads_slim,
         ))
 
         # The plugin writes the hash wherever it is loaded, and it is loaded on
@@ -1731,6 +1824,15 @@ def _compile_module(
         else:
             wrapper_args_for_file.add("--abi-out", outputs.outputs[module.hash])
 
+        # The plugin writes the interface without Core where this variable
+        # points. A module the plugin does not reach would leave the declared
+        # output unwritten, so say why at analysis instead.
+        if module.slim_interfaces:
+            if not plugin_writes_hash:
+                fail("{}: module `{}` compiles without the oneshot linkables plugin (oneshot_preload_exclude, or no plugin in the toolchain), which haskell.oneshot_slim_interfaces needs to write its interface without Core".format(label, module_name))
+            wrapper_args_for_file.add("--extra-env-key=BUCK2_HASKELL_SLIM_INTERFACE")
+            wrapper_args_for_file.add(cmd_args(outputs.outputs[module.slim_interfaces[0]], format = "--extra-env-value={}"))
+
         wrapper_args_for_file.add(_wrapper_oneshot_args(
             actions,
             link_style = link_style,
@@ -1740,6 +1842,7 @@ def _compile_module(
             dependency_modules = dependency_modules,
             src_envs = src_envs,
             packagedb_tag = packagedb_tag,
+            reads_slim = reads_slim,
         ))
 
         compile_cmd_args.add(common_args.oneshot_wrapper_args)
@@ -1800,7 +1903,7 @@ def _compile_module(
                 # edit changes while the ABI hash, and so the dep file, does
                 # not. Tagged, such an edit was served stale from dep-file
                 # state.
-                dependency_modules.project_as_args("interfaces") if enable_th else abi_tag.tag_artifacts(dependency_modules.project_as_args("interfaces")),
+                dependency_modules.project_as_args("interfaces") if enable_th else abi_tag.tag_artifacts(dependency_modules.project_as_args("slim_interfaces" if reads_slim else "interfaces")),
                 abi_tag.tag_artifacts(common_args.dep_unit_plans),
                 abi_hash_inputs,
             ] + hidden_toolchain_deps,
@@ -1822,6 +1925,8 @@ def _compile_module(
             interfaces = module.interfaces + module.extra_interfaces,
             hie_files = module.hie_files,
             db_deps = categorized_package_deps.exposed_package_dbs,
+            slim_interfaces = module.slim_interfaces,
+            slim_db_deps = categorized_package_deps.exposed_package_slim_dbs if read_slim else [],
         ),
         children = [cross_package_modules] + this_package_modules,
     )
@@ -2091,6 +2196,7 @@ def _compile_incr(
             module_plugin_tool_paths = arg.srcs_plugin_tool_paths.get(module.source),
             oneshot_linkables = cmd_args(arg.oneshot_linkables, "-fplugin-opt=Buck2Haskell.OneshotLinkables:no-th-closure") if arg.oneshot_linkables != None and module_name in arg.oneshot_th_closure_exclude else arg.oneshot_linkables,
             oneshot_preload = None if module_name in arg.oneshot_preload_exclude else arg.oneshot_preload,
+            read_slim = arg.slim_interfaces,
         )
 
 def compile_args_for_non_incr(
@@ -2356,7 +2462,7 @@ def _dynamic_do_compile_impl(
         outputs_dict: dict[Artifact, OutputArtifact],
         direct_dep_dynamics: list[ResolvedDynamicValue]) -> list[Provider]:
     direct_deps_by_name = {
-        info.value.name: (info.value.empty_db, dynamic)
+        info.value.name: (info.value.empty_db, dynamic, info.value.slim_db)
         for info, dynamic in zip(arg.direct_deps_info, direct_dep_dynamics)
     }
     common_args = _common_compile_module_args(
@@ -2472,6 +2578,24 @@ def _oneshot_preload_args(ctx: AnalysisContext) -> cmd_args | None:
     plugin = getattr(ctx.attrs, "_oneshot_linkables", None)
     return plugin[OneshotLinkablesInfo].preload_args if plugin else None
 
+def oneshot_slim_interfaces_apply(
+        incremental: bool,
+        is_worker_execute: bool,
+        link_style: LinkStyle,
+        enable_profiling: bool) -> bool:
+    """Whether a unit's modules write and read interfaces without Core: with
+    `haskell.oneshot_slim_interfaces` on, for the one-shot module compiles of a
+    shared, non-profiling build, the shape lab's one-shot rows build. The
+    worker reads interfaces in its own process, and the other shapes write a
+    second interface flavour this does not cover."""
+    return (
+        oneshot_slim_interfaces_enabled() and
+        incremental and
+        not is_worker_execute and
+        link_style == LinkStyle("shared") and
+        not enable_profiling
+    )
+
 def hpc_enabled(haskell_toolchain: HaskellToolchainInfo, compiler_flags: list[typing.Any]) -> bool:
     """Whether a compile instruments for hpc: `-fhpc` among the toolchain's or
     the target's compiler flags."""
@@ -2512,6 +2636,12 @@ def compile(
             "through the make worker" if is_worker_execute else "non-incrementally",
         ))
 
+    slim = oneshot_slim_interfaces_apply(incremental, is_worker_execute, link_style, enable_profiling)
+
+    # A binary's modules read slim interfaces but write none: nothing imports
+    # them from another unit, and a binary loads no oneshot plugin to write them.
+    slim_write = slim and not is_haskell_binary
+
     modules = _modules_by_name(
         ctx,
         sources = ctx.attrs.srcs,
@@ -2523,9 +2653,11 @@ def compile(
         is_haskell_binary = is_haskell_binary,
         src_main = src_main,
         hpc = hpc,
+        slim = slim_write,
     )
 
     interfaces = [interface for module in modules.values() for interface in module.interfaces]
+    slim_interfaces = [interface for module in modules.values() for interface in module.slim_interfaces]
     extra_interfaces = [interface for module in modules.values() for interface in module.extra_interfaces]
     objects = [object for module in modules.values() for object in module.objects]
     extra_objects = [object for module in modules.values() for object in module.extra_objects]
@@ -2583,7 +2715,7 @@ def compile(
         pkg_deps = haskell_toolchain.packages.dynamic if haskell_toolchain.packages else None,
         outputs_dict = {
             o: o.as_output()
-            for o in interfaces + extra_interfaces + objects + extra_objects + hie_files + hpc_dirs + stub_dirs + abi_hashes
+            for o in interfaces + extra_interfaces + objects + extra_objects + hie_files + hpc_dirs + stub_dirs + abi_hashes + slim_interfaces
         },
         direct_dep_dynamics = [info.value.dynamic[enable_profiling] for info in direct_deps_info],
         arg = _DynamicDoCompileOptions(
@@ -2626,6 +2758,7 @@ def compile(
             oneshot_preload = _oneshot_preload_args(ctx),
             oneshot_preload_exclude = getattr(ctx.attrs, "oneshot_preload_exclude", []),
             oneshot_th_closure_exclude = getattr(ctx.attrs, "oneshot_th_closure_exclude", []),
+            slim_interfaces = slim,
         ),
     ))
 
@@ -2669,6 +2802,7 @@ def compile(
         hie = hie_files,
         hpc_dirs = hpc_dirs,
         producing_indices = False,
+        slim = slim_write,
         module_tsets = dyn_module_tsets,
         module_sources = {
             module.name: module.source
