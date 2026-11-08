@@ -323,6 +323,25 @@ def get_source_prefixes(srcs: list[Artifact], module_map: dict[str, str]) -> lis
 
     return source_prefixes.keys()
 
+def _letter_in_every_component(pkgname: str) -> str:
+    # ghc-pkg refuses a package name with a component of digits alone
+    # ("unexpected Empty component"), so a label such as
+    # //src/PortfolioManagementSystem/Internal/V1_1:V1_1 could not be
+    # registered as "...-V1-1-V1-1". Cabal's package-name grammar asks for a
+    # letter in every component:
+    # https://cabal.readthedocs.io/en/stable/cabal-package-description-file.html#pkg-field-name
+    # A digits-only component joins the one before it ("V1-1" is "V11"). Only
+    # such names change, so every other package keeps its name and its action
+    # keys. Two labels that differ only in that separator, such as V1_1 and
+    # V11 in one directory, would share a name; none do in lab's tree today.
+    parts = []
+    for c in pkgname.split("-"):
+        if parts and c.isdigit():
+            parts[-1] = parts[-1] + c
+        else:
+            parts.append(c)
+    return "-".join(parts)
+
 def make_haskell_names_from_label(
         label: Label,
         use_same_package_name: bool,
@@ -338,7 +357,7 @@ def make_haskell_names_from_label(
             libname0 = libprefix + label.name
         else:
             libname0 = libprefix + "_" + label.name
-        pkgname = libname0.replace("_", "-").replace(".", "-")
+        pkgname = _letter_in_every_component(libname0.replace("_", "-").replace(".", "-"))
         libname = "HS" + pkgname
     return (pkgname, libname)
 
