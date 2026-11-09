@@ -11,6 +11,12 @@ prelude = native
 # standard library. //tools:ghc_wrapper and //tools:ghc_pkg_registerer run it.
 prelude.go_binary(
     name = "haskell_tool",
+    # The binary and its standard library build without cgo. In a tree whose
+    # platforms leave cgo on, prelude//go/tools:stdlib otherwise compiles C
+    # with that tree's cxx toolchain; mercury-web-backend's nix cxx fails it
+    # with "_FORTIFY_SOURCE requires compiling with optimization". go_binary's
+    # transition sets prelude//go/constraints:cgo_enabled[false].
+    cgo_enabled = False,
     srcs = glob(
         ["*.go"],
         exclude = ["*_test.go"],
